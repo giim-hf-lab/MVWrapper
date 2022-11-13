@@ -4,17 +4,17 @@ module;
 #include <cstdint>
 
 #include <algorithm>
-#include <array>
 #include <chrono>
 #include <concepts>
-#include <future>
 #include <list>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string>
-#include <tuple>
+#include <string_view>
 #include <type_traits>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include <fmt/compile.h>
@@ -123,6 +123,9 @@ enum class errc : uint32_t
 	_MVS_UPG_ERROR_CODE_EXPAND(UNKNOW, UNKNOWN)
 };
 
+template<typename T>
+using optional = std::variant<errc, T>;
+
 namespace
 {
 
@@ -216,24 +219,22 @@ public:
 
 	~queue() noexcept = default;
 
-	bool available() const & noexcept
-	{
-		std::unique_lock guard(_lock, std::try_to_lock);
-		return guard and _queue.size();
-	}
-
 	void clear() &
 	{
 		std::lock_guard guard(_lock);
 		_queue.clear();
 	}
 
-	frame get() &
+	std::optional<frame> get() &
 	{
 		std::lock_guard guard(_lock);
+
+		if (_queue.empty())
+			return std::nullopt;
+
 		auto ret = std::move(_queue.front());
 		_queue.pop_front();
-		return ret;
+		return std::move(ret);
 	}
 };
 
@@ -305,16 +306,28 @@ struct device final
 	};
 
 	[[nodiscard]]
-	static std::tuple<errc, std::vector<std::tuple<errc, device>>> enumerate(type type) noexcept
+	static optional<std::vector<optional<device>>> enumerate(
+		type type,
+		std::optional<std::string_view> log_path = std::nullopt
+	) noexcept
 	{
-		std::vector<std::tuple<errc, device>> maybe_devices;
 		MV_CC_DEVICE_INFO_LIST devices_info_list;
-		auto ec = _wrap(MV_CC_EnumDevices, static_cast<uint32_t>(type), &devices_info_list);
-		if (ec == errc::OK)
+		if (
+			auto ec = _wrap(MV_CC_EnumDevices, static_cast<uint32_t>(type), &devices_info_list); 
+			ec == errc::OK
+		)
 		{
+			std::vector<optional<device>> devices;
 			if (size_t devices_count = devices_info_list.nDeviceNum)
 			{
-				maybe_devices.reserve(devices_count);
+				if (log_path and log_path->size())
+					if (
+						auto ec = _wrap(MV_CC_SetSDKLogPath, log_path->data());
+						ec != errc::OK
+					)
+						return ec;
+
+				devices.reserve(devices_count);
 				auto devices_info = devices_info_list.pDeviceInfo;
 				for (size_t i = 0; i < devices_count; ++i)
 				{
@@ -338,17 +351,26 @@ struct device final
 							);
 							break;
 						default:
-							maybe_devices.emplace_back(errc::NOT_SUPPORT, std::move(device));
+							devices.emplace_back(errc::NOT_SUPPORT);
 							continue;
 					}
-					maybe_devices.emplace_back(
-						_wrap(MV_CC_CreateHandleWithoutLog, &device._handle, device_info),
-						std::move(device)
-					);
+					if (
+						auto ec = _wrap(
+							log_path ? MV_CC_CreateHandle : MV_CC_CreateHandleWithoutLog,
+							&device._handle,
+							device_info
+						);
+						ec == errc::OK
+					)
+						devices.emplace_back(std::move(device));
+					else
+						devices.emplace_back(ec);
 				}
 			}
+			return std::move(devices);
 		}
-		return { ec, std::move(maybe_devices) };
+		else
+			return ec;
 	}
 private:
 	void *_handle;
@@ -421,6 +443,16 @@ public:
 
 	_EXPAND_ENUM_SET(trigger_activation, "TriggerActivation")
 
+	errc set_fps(std::floating_point auto value)
+	{
+		return _wrap(
+			MV_CC_SetFloatValue,
+			_handle,
+			"AcquisitionFrameRate",
+			std::clamp<float>(value, 0.09, 100000)
+		);
+	}
+
 	template<typename Rep, typename Period>
 	[[nodiscard]]
 	errc set_line_debouncer(const std::chrono::duration<Rep, Period>& delay) & noexcept
@@ -431,8 +463,12 @@ public:
 		else
 			value = delay.count();
 
-		static constexpr int64_t _min = 0, _max = 1000000;
-		return _wrap(MV_CC_SetIntValueEx, _handle, "LineDebouncerTime", std::clamp(value, _min, _max));
+		return _wrap(
+			MV_CC_SetIntValueEx,
+			_handle,
+			"LineDebouncerTime",
+			std::clamp<int64_t>(value, 0, 1000000)
+		);
 	}
 
 	[[nodiscard]]

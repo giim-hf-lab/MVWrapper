@@ -18,5 +18,6 @@ target_link_libraries(mvscpp
 		opencv_core
 	PRIVATE
 		mvs::mvs
+		mvs::vm
 )
 add_library(mvs::cpp ALIAS mvscpp)
