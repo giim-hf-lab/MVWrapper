@@ -27,104 +27,31 @@ module;
 #include <MvErrorDefine.h>
 #include <MvCameraControl.h>
 
-#define _MVS_ENUM_EXPAND(OP, OS, ON, EP, ES, EN) EP##EN##ES = OP##ON##OS
+#define _MVS_ENUM_EXPAND(OP, OS, ON, EP, ES, EN) EP##EN##ES = MV_##OP##ON##OS
 
-#define _MVS_ERROR_CODE_PREFIX_EXPAND(P, ON, EN) _MVS_ENUM_EXPAND(MV_E_##P, , ON, , , P##EN)
-#define _MVS_ERROR_CODE_PREFIX_SIMPLE_EXPAND(P, N) _MVS_ERROR_CODE_PREFIX_EXPAND(P, N, N)
-
-#define _MVS_ERROR_CODE_EXPAND(ON, EN) _MVS_ERROR_CODE_PREFIX_EXPAND(, ON, EN)
-#define _MVS_ERROR_CODE_SIMPLE_EXPAND(N) _MVS_ERROR_CODE_EXPAND(N, N)
-
-#define _MVS_GC_ERROR_CODE_EXPAND(ON, EN) _MVS_ERROR_CODE_PREFIX_EXPAND(GC_, ON, EN)
-#define _MVS_GC_ERROR_CODE_SIMPLE_EXPAND(N) _MVS_GC_ERROR_CODE_EXPAND(N, N)
-
-#define _MVS_GIG_E_ERROR_CODE_EXPAND(ON, EN) _MVS_ENUM_EXPAND(MV_E_, , ON, GIG_E_, , EN)
-#define _MVS_GIG_E_ERROR_CODE_SIMPLE_EXPAND(N) _MVS_GIG_E_ERROR_CODE_EXPAND(N, N)
-
-#define _MVS_USB_ERROR_CODE_EXPAND(ON, EN) _MVS_ERROR_CODE_PREFIX_EXPAND(USB_, ON, EN)
-#define _MVS_USB_ERROR_CODE_SIMPLE_EXPAND(N) _MVS_USB_ERROR_CODE_EXPAND(N, N)
-
-#define _MVS_UPG_ERROR_CODE_EXPAND(ON, EN) _MVS_ERROR_CODE_PREFIX_EXPAND(UPG_, ON, EN)
-#define _MVS_UPG_ERROR_CODE_SIMPLE_EXPAND(N) _MVS_UPG_ERROR_CODE_EXPAND(N, N)
-
-#define _MVS_DEVICE_TYPE_EXPAND(ON, EN) _MVS_ENUM_EXPAND(MV_, _DEVICE, ON, , , EN)
+#define _MVS_DEVICE_TYPE_EXPAND(ON, EN) _MVS_ENUM_EXPAND(, _DEVICE, ON, , , EN)
 #define _MVS_DEVICE_TYPE_SIMPLE_EXPAND(N) _MVS_DEVICE_TYPE_EXPAND(N, N)
 
-#define _MVS_ACCESS_MODE_EXPAND(ON, EN) _MVS_ENUM_EXPAND(MV_ACCESS_, , ON, , , EN)
+#define _MVS_ACCESS_MODE_EXPAND(ON, EN) _MVS_ENUM_EXPAND(ACCESS_, , ON, , , EN)
 
-#define _MVS_TRIGGER_MODE_EXPAND(N) _MVS_ENUM_EXPAND(MV_TRIGGER_MODE_, , N, , , N)
+#define _MVS_TRIGGER_MODE_EXPAND(N) _MVS_ENUM_EXPAND(TRIGGER_MODE_, , N, , , N)
 
-#define _MVS_TRIGGER_SOURCE_EXPAND(ON, EN) _MVS_ENUM_EXPAND(MV_TRIGGER_SOURCE_, , ON, , , EN)
+#define _MVS_TRIGGER_SOURCE_EXPAND(ON, EN) _MVS_ENUM_EXPAND(TRIGGER_SOURCE_, , ON, , , EN)
 
 #define _EXPAND_ENUM_SET(T, TS) \
 	[[nodiscard]] \
-	errc set(T value) & noexcept \
+	bool set(T value) & noexcept \
 	{ \
 		return _wrap(MV_CC_SetEnumValue, _handle, TS, static_cast<uint32_t>(value)); \
 	}
 
-export module mvs;
+export module mv;
 
-export namespace mvs
+export namespace mv
 {
 
-enum class errc : uint32_t
+namespace sdk
 {
-	_MVS_ENUM_EXPAND(MV_, , OK, , , OK),
-
-	_MVS_ERROR_CODE_SIMPLE_EXPAND(HANDLE),
-	_MVS_ERROR_CODE_EXPAND(SUPPORT, NOT_SUPPORT),
-	_MVS_ERROR_CODE_EXPAND(BUFOVER, BUFFER_OVERFLOW),
-	_MVS_ERROR_CODE_EXPAND(CALLORDER, CALL_ORDER),
-	_MVS_ERROR_CODE_SIMPLE_EXPAND(PARAMETER),
-	_MVS_ERROR_CODE_SIMPLE_EXPAND(RESOURCE),
-	_MVS_ERROR_CODE_EXPAND(NODATA, NO_DATA),
-	_MVS_ERROR_CODE_SIMPLE_EXPAND(PRECONDITION),
-	_MVS_ERROR_CODE_SIMPLE_EXPAND(VERSION),
-	_MVS_ERROR_CODE_EXPAND(NOENOUGH_BUF, NOT_ENOUGH_BUFFER),
-	_MVS_ERROR_CODE_SIMPLE_EXPAND(ABNORMAL_IMAGE),
-	_MVS_ERROR_CODE_SIMPLE_EXPAND(LOAD_LIBRARY),
-	_MVS_ERROR_CODE_EXPAND(NOOUTBUF, NO_OUT_BUFFER),
-	_MVS_ERROR_CODE_SIMPLE_EXPAND(ENCRYPT),
-	_MVS_ERROR_CODE_EXPAND(UNKNOW, UNKNOWN),
-
-	_MVS_GC_ERROR_CODE_SIMPLE_EXPAND(GENERIC),
-	_MVS_GC_ERROR_CODE_SIMPLE_EXPAND(ARGUMENT),
-	_MVS_GC_ERROR_CODE_SIMPLE_EXPAND(RANGE),
-	_MVS_GC_ERROR_CODE_SIMPLE_EXPAND(PROPERTY),
-	_MVS_GC_ERROR_CODE_SIMPLE_EXPAND(RUNTIME),
-	_MVS_GC_ERROR_CODE_SIMPLE_EXPAND(LOGICAL),
-	_MVS_GC_ERROR_CODE_SIMPLE_EXPAND(ACCESS),
-	_MVS_GC_ERROR_CODE_SIMPLE_EXPAND(TIMEOUT),
-	_MVS_GC_ERROR_CODE_EXPAND(DYNAMICCAST, DYNAMIC_CAST),
-	_MVS_GC_ERROR_CODE_EXPAND(UNKNOW, UNKNOWN),
-
-	_MVS_GIG_E_ERROR_CODE_SIMPLE_EXPAND(NOT_IMPLEMENTED),
-	_MVS_GIG_E_ERROR_CODE_SIMPLE_EXPAND(INVALID_ADDRESS),
-	_MVS_GIG_E_ERROR_CODE_SIMPLE_EXPAND(WRITE_PROTECT),
-	_MVS_GIG_E_ERROR_CODE_SIMPLE_EXPAND(ACCESS_DENIED),
-	_MVS_GIG_E_ERROR_CODE_SIMPLE_EXPAND(BUSY),
-	_MVS_GIG_E_ERROR_CODE_SIMPLE_EXPAND(PACKET),
-	_MVS_GIG_E_ERROR_CODE_EXPAND(NETER, NETWORK_ERROR),
-	_MVS_GIG_E_ERROR_CODE_SIMPLE_EXPAND(IP_CONFLICT),
-
-	_MVS_USB_ERROR_CODE_SIMPLE_EXPAND(READ),
-	_MVS_USB_ERROR_CODE_SIMPLE_EXPAND(WRITE),
-	_MVS_USB_ERROR_CODE_SIMPLE_EXPAND(DEVICE),
-	_MVS_USB_ERROR_CODE_SIMPLE_EXPAND(GENICAM),
-	_MVS_USB_ERROR_CODE_SIMPLE_EXPAND(BANDWIDTH),
-	_MVS_USB_ERROR_CODE_SIMPLE_EXPAND(DRIVER),
-	_MVS_USB_ERROR_CODE_EXPAND(UNKNOW, UNKNOWN),
-
-	_MVS_UPG_ERROR_CODE_SIMPLE_EXPAND(FILE_MISMATCH),
-	_MVS_UPG_ERROR_CODE_SIMPLE_EXPAND(LANGUSGE_MISMATCH),
-	_MVS_UPG_ERROR_CODE_SIMPLE_EXPAND(CONFLICT),
-	_MVS_UPG_ERROR_CODE_SIMPLE_EXPAND(INNER_ERR),
-	_MVS_UPG_ERROR_CODE_EXPAND(UNKNOW, UNKNOWN)
-};
-
-template<typename T>
-using optional = std::variant<errc, T>;
 
 namespace
 {
@@ -132,9 +59,9 @@ namespace
 template<typename F, typename... Args>
 	requires std::is_invocable_r_v<uint32_t, F, Args...>
 [[nodiscard]]
-inline static errc _wrap(F&& f, Args&&... args)
+inline static bool _wrap(F&& f, Args&&... args)
 {
-	return static_cast<errc>(f(std::forward<Args>(args)...));
+	return f(std::forward<Args>(args)...) == MV_OK;
 }
 
 template<typename S, typename F, typename... Args>
@@ -306,26 +233,20 @@ struct device final
 	};
 
 	[[nodiscard]]
-	static optional<std::vector<optional<device>>> enumerate(
+	static std::vector<device> enumerate(
 		type type,
 		std::optional<std::string_view> log_path = std::nullopt
 	) noexcept
 	{
 		MV_CC_DEVICE_INFO_LIST devices_info_list;
-		if (
-			auto ec = _wrap(MV_CC_EnumDevices, static_cast<uint32_t>(type), &devices_info_list); 
-			ec == errc::OK
-		)
+		if (_wrap(MV_CC_EnumDevices, static_cast<uint32_t>(type), &devices_info_list))
 		{
-			std::vector<optional<device>> devices;
+			std::vector<device> devices;
 			if (size_t devices_count = devices_info_list.nDeviceNum)
 			{
 				if (log_path and log_path->size())
-					if (
-						auto ec = _wrap(MV_CC_SetSDKLogPath, log_path->data());
-						ec != errc::OK
-					)
-						return ec;
+					if (_wrap(MV_CC_SetSDKLogPath, log_path->data()))
+						return {};
 
 				devices.reserve(devices_count);
 				auto devices_info = devices_info_list.pDeviceInfo;
@@ -351,26 +272,19 @@ struct device final
 							);
 							break;
 						default:
-							devices.emplace_back(errc::NOT_SUPPORT);
 							continue;
 					}
-					if (
-						auto ec = _wrap(
-							log_path ? MV_CC_CreateHandle : MV_CC_CreateHandleWithoutLog,
-							&device._handle,
-							device_info
-						);
-						ec == errc::OK
-					)
+					if (_wrap(
+						log_path ? MV_CC_CreateHandle : MV_CC_CreateHandleWithoutLog,
+						&device._handle,
+						device_info
+					))
 						devices.emplace_back(std::move(device));
-					else
-						devices.emplace_back(ec);
 				}
 			}
-			return std::move(devices);
+			return devices;
 		}
-		else
-			return ec;
+		return {};
 	}
 private:
 	void *_handle;
@@ -414,25 +328,25 @@ public:
 	}
 
 	[[nodiscard]]
-	errc open(access_mode mode = access_mode::EXCLUSIVE, uint16_t switch_over_key = 0) & noexcept
+	bool open(access_mode mode = access_mode::EXCLUSIVE, uint16_t switch_over_key = 0) & noexcept
 	{
 		return _wrap(MV_CC_OpenDevice, _handle, static_cast<uint32_t>(mode), switch_over_key);
 	}
 
 	[[nodiscard]]
-	errc close() & noexcept
+	bool close() & noexcept
 	{
 		return _wrap(MV_CC_CloseDevice, _handle);
 	}
 
 	[[nodiscard]]
-	errc start() & noexcept
+	bool start() & noexcept
 	{
 		return _wrap(MV_CC_StartGrabbing, _handle);
 	}
 
 	[[nodiscard]]
-	errc stop() & noexcept
+	bool stop() & noexcept
 	{
 		return _wrap(MV_CC_StopGrabbing, _handle);
 	}
@@ -443,7 +357,7 @@ public:
 
 	_EXPAND_ENUM_SET(trigger_activation, "TriggerActivation")
 
-	errc set_fps(std::floating_point auto value)
+	bool set_fps(std::floating_point auto value)
 	{
 		return _wrap(
 			MV_CC_SetFloatValue,
@@ -455,7 +369,7 @@ public:
 
 	template<typename Rep, typename Period>
 	[[nodiscard]]
-	errc set_line_debouncer(const std::chrono::duration<Rep, Period>& delay) & noexcept
+	bool set_line_debouncer(const std::chrono::duration<Rep, Period>& delay) & noexcept
 	{
 		int64_t value;
 		if constexpr (not std::is_same_v<decltype(delay), std::chrono::microseconds>)
@@ -472,7 +386,7 @@ public:
 	}
 
 	[[nodiscard]]
-	errc set_receiver(queue& queue) & noexcept
+	bool set_receiver(queue& queue) & noexcept
 	{
 		return _wrap(MV_CC_RegisterImageCallBackForBGR, _handle, queue::_callback, &queue);
 	}
@@ -483,5 +397,7 @@ public:
 		return _serial;
 	}
 };
+
+}
 
 }
