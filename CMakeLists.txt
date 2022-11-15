@@ -77,9 +77,9 @@ target_include_directories(mvcpp SYSTEM
 target_link_libraries(mvcpp
 	PUBLIC
 		fmt::fmt
-		msgpackc-cxx
 		opencv_core
 	PRIVATE
 		mv::sdk
+		mv::detection
 )
 add_library(mv::cpp ALIAS mvcpp)
