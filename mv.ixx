@@ -11,7 +11,6 @@ module;
 #include <optional>
 #include <stdexcept>
 #include <string>
-#include <string_view>
 #include <type_traits>
 #include <utility>
 #include <variant>
@@ -38,12 +37,39 @@ module;
 
 #define _MVS_TRIGGER_SOURCE_EXPAND(ON, EN) _MVS_ENUM_EXPAND(TRIGGER_SOURCE_, , ON, , , EN)
 
-#define _EXPAND_ENUM_SET(T, TS) \
+#define _MVS_SIMPLE_REPLACE_CALL(FUNCTION, NAME) \
 	[[nodiscard]] \
-	bool set(T value) & noexcept \
+	bool NAME() & noexcept \
 	{ \
-		return _wrap(MV_CC_SetEnumValue, _handle, TS, static_cast<uint32_t>(value)); \
+		return _wrap(MV_CC_##FUNCTION, _handle); \
 	}
+
+#define _MVS_VALUE_SET_CALL(FUNCTION, TYPE, DEST_TYPE, NAME, VALUE_STRING, CAST, ...) \
+	[[nodiscard]] \
+	bool NAME(TYPE value) & noexcept \
+	{ \
+		return _wrap( \
+			MV_CC_Set##FUNCTION, \
+			_handle, \
+			#VALUE_STRING, \
+			CAST<DEST_TYPE>(value __VA_OPT__(,) __VA_ARGS__) \
+		); \
+	}
+
+#define _MVS_ENUM_SET(TYPE, VALUE_STRING) _MVS_VALUE_SET_CALL( \
+	EnumValue, \
+	TYPE, \
+	uint32_t, \
+	set, \
+	VALUE_STRING, \
+	static_cast \
+)
+
+#define _MVS_FLOATING_SET(NAME, ...) \
+	_MVS_VALUE_SET_CALL(FloatValue, std::floating_point auto, float, set_##NAME, __VA_ARGS__)
+
+#define _MVS_INTEGER_SET(NAME, ...) \
+	_MVS_VALUE_SET_CALL(IntValueEx, std::integral auto, int64_t, set_##NAME, __VA_ARGS__)
 
 export module mv;
 
@@ -235,7 +261,7 @@ struct device final
 	[[nodiscard]]
 	static std::vector<device> enumerate(
 		type type,
-		std::optional<std::string_view> log_path = std::nullopt
+		std::optional<std::string> log_path = std::nullopt
 	) noexcept
 	{
 		MV_CC_DEVICE_INFO_LIST devices_info_list;
@@ -245,7 +271,7 @@ struct device final
 			if (size_t devices_count = devices_info_list.nDeviceNum)
 			{
 				if (log_path and log_path->size())
-					if (_wrap(MV_CC_SetSDKLogPath, log_path->data()))
+					if (_wrap(MV_CC_SetSDKLogPath, log_path->c_str()))
 						return {};
 
 				devices.reserve(devices_count);
@@ -333,39 +359,21 @@ public:
 		return _wrap(MV_CC_OpenDevice, _handle, static_cast<uint32_t>(mode), switch_over_key);
 	}
 
-	[[nodiscard]]
-	bool close() & noexcept
-	{
-		return _wrap(MV_CC_CloseDevice, _handle);
-	}
+	_MVS_SIMPLE_REPLACE_CALL(CloseDevice, close)
 
-	[[nodiscard]]
-	bool start() & noexcept
-	{
-		return _wrap(MV_CC_StartGrabbing, _handle);
-	}
+	_MVS_SIMPLE_REPLACE_CALL(StartGrabbing, start)
 
-	[[nodiscard]]
-	bool stop() & noexcept
-	{
-		return _wrap(MV_CC_StopGrabbing, _handle);
-	}
+	_MVS_SIMPLE_REPLACE_CALL(StopGrabbing, stop)
 
-	_EXPAND_ENUM_SET(trigger_mode, "TriggerMode")
+	_MVS_ENUM_SET(trigger_mode, TriggerMode)
 
-	_EXPAND_ENUM_SET(trigger_source, "TriggerSource")
+	_MVS_ENUM_SET(trigger_source, TriggerSource)
 
-	_EXPAND_ENUM_SET(trigger_activation, "TriggerActivation")
+	_MVS_ENUM_SET(trigger_activation, TriggerActivation)
 
-	bool set_fps(std::floating_point auto value)
-	{
-		return _wrap(
-			MV_CC_SetFloatValue,
-			_handle,
-			"AcquisitionFrameRate",
-			std::clamp<float>(value, 0.09, 100000)
-		);
-	}
+	_MVS_FLOATING_SET(fps, AcquisitionFrameRate, std::clamp, 0.09, 100000)
+
+	_MVS_INTEGER_SET(line_debouncer, LineDebouncerTime, std::clamp, 0, 1000000)
 
 	template<typename Rep, typename Period>
 	[[nodiscard]]
@@ -377,12 +385,7 @@ public:
 		else
 			value = delay.count();
 
-		return _wrap(
-			MV_CC_SetIntValueEx,
-			_handle,
-			"LineDebouncerTime",
-			std::clamp<int64_t>(value, 0, 1000000)
-		);
+		return set_line_debouncer(value);
 	}
 
 	[[nodiscard]]
