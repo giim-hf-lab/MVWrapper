@@ -42,8 +42,8 @@ target_include_directories(mvcpp SYSTEM
 )
 target_link_libraries(mvcpp
 	PUBLIC
-		fmt::fmt
 		opencv_core
+		opencv_imgproc
 	PRIVATE
 		mv::sdk
 )
