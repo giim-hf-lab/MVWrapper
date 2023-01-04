@@ -23,8 +23,6 @@ module;
 #include <opencv2/core.hpp>
 
 #include <CameraParams.h>
-#include <CNNSingleCharDetectCpp.h>
-#include <MVD_ErrorDefine.h>
 #include <MvErrorDefine.h>
 #include <MvCameraControl.h>
 
@@ -379,129 +377,6 @@ public:
 	const std::string& serial() const & noexcept
 	{
 		return _serial;
-	}
-};
-
-}
-
-namespace detection
-{
-
-namespace
-{
-
-template<typename F, typename... Args>
-	requires std::is_invocable_r_v<int, F, Args...>
-[[nodiscard]]
-inline static bool _wrap(F&& f, Args&&... args)
-{
-	return f(std::forward<Args>(args)...) == MVD_OK;
-}
-
-template<typename S, typename F, typename... Args>
-	requires std::is_invocable_r_v<int, F, Args...>
-inline static void _raise_if_fail(S&& what, F&& f, Args&&... args)
-{
-	if (int ret = f(std::forward<Args>(args)...); ret != MVD_OK)
-	[[unlikely]]
-		throw std::runtime_error(fmt::format(FMT_COMPILE("({:#X}) {}"), ret, what));
-}
-
-}
-
-export struct character final
-{
-	using result_type = std::vector<std::string>;
-
-	enum class device
-	{
-		_MVD_PLATFORM_EXPAND(CPU),
-		_MVD_PLATFORM_EXPAND(GPU)
-	};
-private:
-	VisionDesigner::CNNSingleCharDetect::ICNNSingleCharDetectTool *_ocr;
-	VisionDesigner::IMvdImage *_image;
-public:
-	character(device device) : _ocr(), _image()
-	{
-		_raise_if_fail(
-			"failed to create detection tool",
-			CreateCNNSingleCharDetectToolInstance,
-			&_ocr,
-			static_cast<VisionDesigner::MVD_PLATFORM_TYPE>(device)
-		);
-		_raise_if_fail("failed to create image", CreateImageInstance, &_image);
-	}
-
-	character(const character&) = delete;
-
-	character(character&& other) noexcept : _ocr(other._ocr), _image(other._image)
-	{
-		other._ocr = nullptr;
-		other._image = nullptr;
-	}
-
-	character& operator=(const character&) = delete;
-
-	character& operator=(character&& other) = delete;
-
-	~character() noexcept
-	{
-		if (_ocr)
-		{
-			_raise_if_fail(
-				"failed to destroy detection tool",
-				DestroyCNNSingleCharDetectToolInstance,
-				_ocr
-			);
-			_ocr = nullptr;
-		}
-
-		if (_image)
-		{
-			_raise_if_fail("failed to destroy image", DestroyImageInstance, _image);
-			_image = nullptr;
-		}
-	}
-
-	[[nodiscard]]
-	result_type operator()(const cv::Mat& content) &
-	{
-		_image->InitImage(
-			content.cols,
-			content.rows,
-			VisionDesigner::MVD_PIXEL_FORMAT::MVD_PIXEL_BGR_BGR24_C3
-		);
-		auto channel_info = _image->GetImageData(0);
-		content.copyTo(cv::Mat(
-			content.rows,
-			content.cols,
-			CV_8UC3,
-			channel_info->pData,
-			channel_info->nRowStep
-		));
-
-		_ocr->SetInputImage(_image);
-		_ocr->Run();
-		auto inferences = _ocr->GetResult();
-
-		std::vector<std::string> ret;
-		const size_t lines_count = inferences->GetTextNum();
-		ret.reserve(lines_count);
-		for (size_t i = 0; i < lines_count; ++i)
-		{
-			auto line_result = inferences->GetTextInfo(i);
-			auto info_list = line_result->GetRecogInfoList();
-			auto& line = ret.emplace_back();
-
-			const size_t blocks_count = info_list->GetTopNum();
-			for (size_t j = 0; j < blocks_count; ++j)
-			{
-				auto info = info_list->GetRecogInfo(j);
-				line.append(info->GetRecogString(), info->GetCharNum());
-			}
-		}
-		return ret;
 	}
 };
 
