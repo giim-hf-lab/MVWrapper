@@ -3,7 +3,9 @@ module;
 #include <cstddef>
 #include <cstdint>
 
+#include <algorithm>
 #include <chrono>
+#include <concepts>
 #include <exception>
 #include <list>
 #include <mutex>
@@ -33,7 +35,8 @@ struct queue final
 		cv::Mat content;
 
 		frame(uint64_t device_timestamp, uint64_t host_timestamp, cv::Mat content) noexcept
-			: device_timestamp(device_timestamp), host_timestamp(host_timestamp), content(std::move(content)) {}
+			: device_timestamp(device_timestamp), host_timestamp(host_timestamp), content(std::move(content))
+		{}
 
 		~frame() noexcept = default;
 
@@ -76,7 +79,7 @@ private:
 	uint8_t _rotation;
 	std::list<frame> _queue;
 public:
-	queue(uint8_t rotation) : _lock(), _rotation(rotation % 4), _queue() {}
+	queue(uint8_t rotation = 0) : _lock(), _rotation(rotation % 4), _queue() {}
 
 	queue(const queue&) = delete;
 
@@ -89,7 +92,7 @@ public:
 
 	queue& operator=(const queue&) = delete;
 
-	queue& operator=(queue&& other) = delete;
+	queue& operator=(queue&&) = delete;
 
 	~queue() noexcept = default;
 
@@ -100,7 +103,7 @@ public:
 	}
 
 	[[nodiscard]]
-	bool get(frame& frame) &
+	bool get(frame& frame, size_t& left) &
 	{
 		std::lock_guard guard(_lock);
 
@@ -109,7 +112,137 @@ public:
 
 		frame = std::move(_queue.front());
 		_queue.pop_front();
+		left = _queue.size();
 		return true;
+	}
+};
+
+export template<typename> struct constraint final {};
+
+export
+template<std::integral T>
+struct constraint<T> final
+{
+	T current, min, max, step;
+
+	constexpr constraint() noexcept = default;
+
+	constexpr constraint(T current, T min, T max, T step) noexcept
+		: current(current), min(min), max(max), step(step)
+	{}
+
+	template<bool round_up>
+	constexpr T coerce(T value) const noexcept
+	{
+		if (value < min)
+			return min;
+		if (value > max)
+			return max;
+		if (auto r = (value - min) % step)
+			if constexpr (round_up)
+				value += step - r;
+			else
+				value -= r;
+		return value;
+	}
+
+	inline constexpr T coerce(T value, bool round_up = false) const noexcept
+	{
+		return round_up ? check<true>(value) : check<false>(value);
+	}
+
+	inline constexpr operator T() const noexcept
+	{
+		return current;
+	}
+};
+
+export
+template<typename Rep, typename Period>
+struct constraint<std::chrono::duration<Rep, Period>> final
+{
+	std::chrono::duration<Rep, Period> current, min, max, step;
+
+	constexpr constraint() noexcept = default;
+
+	constexpr constraint(
+		std::chrono::duration<Rep, Period> current,
+		std::chrono::duration<Rep, Period> min,
+		std::chrono::duration<Rep, Period> max,
+		std::chrono::duration<Rep, Period> step
+	) noexcept
+		: current(std::move(current)), min(std::move(min)), max(std::move(max)), step(std::move(step))
+	{}
+
+	template<std::integral T>
+	constexpr constraint(const constraint<T>& other) :
+		current(other.current), min(other.min), max(other.max), step(other.step)
+	{}
+
+	template<std::integral T>
+	constexpr operator constraint<T>() const noexcept
+	{
+		return constraint<T>(current.count(), min.count(), max.count(), step.count());
+	}
+
+	template<bool round_up, typename Rep2, typename Period2>
+	constexpr std::chrono::duration<Rep, Period> coerce(
+		std::chrono::duration<Rep2, Period2> value
+	) const noexcept
+	{
+		if (value < min)
+			return min;
+		if (value > max)
+			return max;
+		std::chrono::duration<Rep, Period> ret(value);
+		if (auto r = (ret - min) % step)
+			if constexpr (round_up)
+				ret += step - r;
+			else
+				ret -= r;
+		return ret;
+	}
+
+	template<typename Rep2, typename Period2>
+	inline constexpr std::chrono::duration<Rep, Period> coerce(
+		std::chrono::duration<Rep2, Period2> value,
+		bool round_up = false
+	) const noexcept
+	{
+		return round_up ? check<true>(std::move(value)) : check<false>(std::move(value));
+	}
+
+	inline constexpr operator const std::chrono::duration<Rep, Period>&() const & noexcept
+	{
+		return current;
+	}
+
+	inline constexpr operator std::chrono::duration<Rep, Period>() && noexcept
+	{
+		return std::move(current);
+	}
+};
+
+export
+template<std::floating_point T>
+struct constraint<T> final
+{
+	T current, min, max;
+
+	constexpr constraint() noexcept = default;
+
+	constexpr constraint(T current, T min, T max) noexcept
+		: current(current), min(min), max(max)
+	{}
+
+	inline constexpr T coerce(T value) const noexcept
+	{
+		return std::clamp<T>(value, min, max);
+	}
+
+	inline constexpr operator T() const noexcept
+	{
+		return current;
 	}
 };
 
@@ -150,11 +283,20 @@ public:
 private:
 #define _MVS_EXPOSURE_AUTO_EXPAND(N) _MVS_ENUM_EXPAND(EXPOSURE_AUTO_MODE_, , N, , , N)
 public:
-	_MVS_DEFINE_ENUM(exposure_auto)
+	_MVS_DEFINE_ENUM(exposure_auto_mode)
 	{
 		_MVS_EXPOSURE_AUTO_EXPAND(OFF),
 		_MVS_EXPOSURE_AUTO_EXPAND(ONCE),
 		_MVS_EXPOSURE_AUTO_EXPAND(CONTINUOUS)
+	};
+private:
+#define _MVS_GAIN_MODE_EXPAND(N) _MVS_ENUM_EXPAND(GAIN_MODE_, , N, , , N)
+public:
+	_MVS_DEFINE_ENUM(gain_auto_mode)
+	{
+		_MVS_GAIN_MODE_EXPAND(OFF),
+		_MVS_GAIN_MODE_EXPAND(ONCE),
+		_MVS_GAIN_MODE_EXPAND(CONTINUOUS)
 	};
 private:
 #define _MVS_TRIGGER_MODE_EXPAND(N) _MVS_ENUM_EXPAND(TRIGGER_MODE_, , N, , , N)
@@ -305,18 +447,7 @@ public:
 
 	device& operator=(const device&) = delete;
 
-	device& operator=(device&& other) noexcept
-	{
-		if (not destroy())
-			std::terminate();
-		_handle = other._handle;
-		_serial = std::move(other._serial);
-		_type = other._type;
-		other._handle = nullptr;
-		other._type = type::UNKNOWN;
-
-		return *this;
-	}
+	device& operator=(device&&) = delete;
 
 	[[nodiscard]]
 	operator bool() const noexcept
@@ -359,7 +490,7 @@ public:
 	[[nodiscard]]
 	bool open(access_mode mode = access_mode::EXCLUSIVE, unsigned short switch_over_key = 0) noexcept
 	{
-		return _wrap(MV_CC_OpenDevice, _handle, static_cast<uint32_t>(mode), switch_over_key);
+		return _wrap(MV_CC_OpenDevice, _handle, static_cast<unsigned int>(mode), switch_over_key);
 	}
 private:
 #define _MVS_SIMPLE_REPLACE_CALL(FUNCTION, NAME) \
@@ -375,70 +506,153 @@ public:
 
 	_MVS_SIMPLE_REPLACE_CALL(StopGrabbing, stop)
 private:
-#define _MVS_SIMPLE_REPLACE_SET_CALL(FUNCTION, NAME, TYPE) \
+#define _MVS_VALUE_SET_WRAP(PREFIX, SUFFIX, TYPE, DEFAULT_VALUE, FUNCTION, VALUE_STRING, CAST) \
 	[[nodiscard]] \
-	bool set_##NAME(TYPE value) noexcept \
+	bool PREFIX##SUFFIX(TYPE value DEFAULT_VALUE) noexcept \
 	{ \
-		return _wrap(MV_CC_Set##FUNCTION, _handle, value); \
-	}
-public:
-	_MVS_SIMPLE_REPLACE_SET_CALL(ImageNodeNum, cache_size, unsigned int)
-
-	_MVS_SIMPLE_REPLACE_SET_CALL(OutputQueueSize, queue_size, unsigned int)
-private:
-#define _MVS_REPLACE_ENUM_SET_CALL(FUNCTION, NAME, TYPE, OLD_TYPE) \
-	[[nodiscard]] \
-	bool set_##NAME(TYPE value) noexcept \
-	{ \
-		return _wrap(MV_CC_Set##FUNCTION, _handle, static_cast<MV_##OLD_TYPE>(value)); \
-	}
-public:
-	_MVS_REPLACE_ENUM_SET_CALL(GrabStrategy, grab_strategy, grab_strategy, GRAB_STRATEGY)
-private:
-#define _MVS_VALUE_SET_CALL(FUNCTION, TYPE, DEST_TYPE, NAME, VALUE_STRING) \
-	[[nodiscard]] \
-	bool NAME(TYPE value) noexcept \
-	{ \
-		return _wrap(MV_CC_Set##FUNCTION, _handle, #VALUE_STRING, static_cast<DEST_TYPE>(value)); \
+		return _wrap(MV_CC_Set##FUNCTION, _handle, VALUE_STRING, CAST(value)); \
 	}
 
-#define _MVS_ENUM_SET(TYPE, VALUE_STRING) \
-	_MVS_VALUE_SET_CALL(EnumValue, TYPE, unsigned int, set, VALUE_STRING)
+#define _MVS_BOOL_WRAP(NAME, VALUE_STRING) \
+	_MVS_VALUE_SET_WRAP(enable, _##NAME, bool, = true, BoolValue, VALUE_STRING, ) \
+	[[nodiscard]] \
+	bool get_##NAME(bool& value) noexcept \
+	{ \
+		return _wrap(MV_CC_GetBoolValue, _handle, VALUE_STRING, &value); \
+	}
 public:
-	_MVS_ENUM_SET(exposure_auto, ExposureAuto)
+	_MVS_BOOL_WRAP(strobe, "StrobeEnable")
 
-	_MVS_ENUM_SET(trigger_activation, TriggerActivation)
-
-	_MVS_ENUM_SET(trigger_mode, TriggerMode)
-
-	_MVS_ENUM_SET(trigger_source, TriggerSource)
+	_MVS_BOOL_WRAP(fps, "AcquisitionFrameRateEnable")
 private:
-#define _MVS_FLOATING_SET(NAME, VALUE_STRING) \
-	_MVS_VALUE_SET_CALL(FloatValue, float, float, set_##NAME, VALUE_STRING)
+#define _MVS_SIMPLE_REPLACE_SET_CALL(FUNCTION, NAME, TYPE, CAST) \
+	[[nodiscard]] \
+	bool set##NAME(TYPE value) noexcept \
+	{ \
+		return _wrap(MV_CC_Set##FUNCTION, _handle, CAST(value)); \
+	}
+
+#define _MVS_ENUM_WRAP(TYPE, VALUE_STRING) \
+	_MVS_VALUE_SET_WRAP(set, , TYPE, , EnumValue, VALUE_STRING, static_cast<unsigned int>) \
+	[[nodiscard]] \
+	bool get(TYPE& value) noexcept \
+	{ \
+		if (MVCC_ENUMVALUE buffer; _wrap(MV_CC_GetEnumValue, _handle, VALUE_STRING, &buffer)) \
+		{ \
+			value = static_cast<TYPE>(buffer.nCurValue); \
+			return true; \
+		} \
+		return false; \
+	}
 public:
-	_MVS_FLOATING_SET(exposure_time, ExposureTime)
+	_MVS_ENUM_WRAP(exposure_auto_mode, "ExposureAuto")
 
-	_MVS_FLOATING_SET(fps, AcquisitionFrameRate)
+	_MVS_ENUM_WRAP(gain_auto_mode, "GainAuto")
 
-	_MVS_FLOATING_SET(gain, Gain)
+	_MVS_ENUM_WRAP(trigger_activation, "TriggerActivation")
+
+	_MVS_ENUM_WRAP(trigger_mode, "TriggerMode")
+
+	_MVS_ENUM_WRAP(trigger_source, "TriggerSource")
+
+	_MVS_SIMPLE_REPLACE_SET_CALL(GrabStrategy, , grab_strategy, static_cast<MV_GRAB_STRATEGY>)
 private:
-#define _MVS_INTEGER_SET(NAME, VALUE_STRING) \
-	_MVS_VALUE_SET_CALL(IntValueEx, int64_t, int64_t, set_##NAME, VALUE_STRING)
+#define _MVS_FLOAT_WRAP(NAME, VALUE_STRING) \
+	_MVS_VALUE_SET_WRAP(set, _##NAME, float, , FloatValue, VALUE_STRING, ) \
+	[[nodiscard]] \
+	bool get_##NAME(float& value) noexcept \
+	{ \
+		if (MVCC_FLOATVALUE buffer; _wrap(MV_CC_GetFloatValue, _handle, VALUE_STRING, &buffer)) \
+		{ \
+			value = buffer.fCurValue; \
+			return true; \
+		} \
+		return false; \
+	} \
+	[[nodiscard]] \
+	bool get_##NAME(constraint<float>& value) noexcept \
+	{ \
+		if (MVCC_FLOATVALUE buffer; _wrap(MV_CC_GetFloatValue, _handle, VALUE_STRING, &buffer)) \
+		{ \
+			value.current = buffer.fCurValue; \
+			value.min = buffer.fMin; \
+			value.max = buffer.fMax; \
+			return true; \
+		} \
+		return false; \
+	}
 public:
-	_MVS_INTEGER_SET(line_debouncer, LineDebouncerTime)
+	_MVS_FLOAT_WRAP(exposure, "ExposureTime")
+
+	_MVS_FLOAT_WRAP(fps, "AcquisitionFrameRate")
+
+	_MVS_FLOAT_WRAP(gain, "Gain")
+
+	_MVS_FLOAT_WRAP(trigger_delay, "TriggerDelay")
+private:
+#define _MVS_INTEGER_WRAP(NAME, VALUE_STRING) \
+	_MVS_VALUE_SET_WRAP(set, _##NAME, int64_t, , IntValue, VALUE_STRING, ) \
+	[[nodiscard]] \
+	bool get_##NAME(int64_t& value) noexcept \
+	{ \
+		if (MVCC_INTVALUE buffer; _wrap(MV_CC_GetIntValue, _handle, VALUE_STRING, &buffer)) \
+		{ \
+			value = buffer.nCurValue; \
+			return true; \
+		} \
+		return false; \
+	} \
+	[[nodiscard]] \
+	bool get_##NAME(constraint<int64_t>& value) noexcept \
+	{ \
+		if (MVCC_INTVALUE buffer; _wrap(MV_CC_GetIntValue, _handle, VALUE_STRING, &buffer)) \
+		{ \
+			value.current = buffer.nCurValue; \
+			value.min = buffer.nMin; \
+			value.max = buffer.nMax; \
+			value.step = buffer.nInc; \
+			return true; \
+		} \
+		return false; \
+	}
+public:
+	_MVS_INTEGER_WRAP(line_debouncer, "LineDebouncerTime")
+
+	_MVS_INTEGER_WRAP(strobe_line_delay, "StrobeLineDelay")
+
+	_MVS_INTEGER_WRAP(strobe_line_duration, "StrobeLineDuration")
 
 	[[nodiscard]]
-	inline bool set_line_debouncer(const std::chrono::microseconds& delay) noexcept
+	inline bool set_line_debouncer(const std::chrono::microseconds& value) noexcept
 	{
-		return set_line_debouncer(delay.count());
+		return set_line_debouncer(value.count());
 	}
 
-	template<typename Rep, typename Period>
 	[[nodiscard]]
-	inline bool set_line_debouncer(const std::chrono::duration<Rep, Period>& delay) noexcept
+	inline bool get_line_debouncer(std::chrono::microseconds& value) noexcept
 	{
-		return set_line_debouncer(std::chrono::duration_cast<std::chrono::microseconds>(delay));
+		if (int64_t buffer; get_line_debouncer(buffer))
+		{
+			value = std::chrono::microseconds(buffer);
+			return true;
+		}
+		return false;
 	}
+
+	[[nodiscard]]
+	inline bool get_line_debouncer(constraint<std::chrono::microseconds>& value) noexcept
+	{
+		if (constraint<int64_t> buffer; get_line_debouncer(buffer))
+		{
+			value = buffer;
+			return true;
+		}
+		return false;
+	}
+
+	_MVS_SIMPLE_REPLACE_SET_CALL(ImageNodeNum, _cache_size, unsigned int, )
+
+	_MVS_SIMPLE_REPLACE_SET_CALL(OutputQueueSize, _queue_size, unsigned int, )
 
 	[[nodiscard]]
 	bool set_receiver(queue& queue) noexcept
