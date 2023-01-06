@@ -82,8 +82,6 @@ target_compile_options(gemalto
 )
 target_link_libraries(gemalto
 	PUBLIC
-		fmt::fmt
-
 		gemalto::superdog
 )
 add_library(gemalto::gemalto ALIAS gemalto)
