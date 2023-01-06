@@ -5,7 +5,6 @@ module;
 #include <chrono>
 #include <concepts>
 #include <exception>
-#include <optional>
 #include <ranges>
 #include <type_traits>
 #include <utility>
@@ -40,14 +39,6 @@ private:
 
 	dog_handle_t _handle;
 public:
-	[[nodiscard]]
-	static std::optional<version> get_version() noexcept
-	{
-		if (version v; _wrap(dog_get_version, &v.major, &v.minor, &v.server, &v.number, _VENDOR_CODE))
-			return v;
-		return std::nullopt;
-	}
-
 	[[nodiscard]]
 	static bool get_version(version& v) noexcept
 	{
@@ -128,14 +119,6 @@ public:
 	}
 
 	[[nodiscard]]
-	std::optional<size_t> get_size(file_id_type file_id) const noexcept
-	{
-		if (dog_size_t size; _wrap(dog_get_size, _handle, file_id, &size))
-			return size;
-		return std::nullopt;
-	}
-
-	[[nodiscard]]
 	bool get_size(file_id_type file_id, size_t& size) const noexcept
 	{
 		if (dog_size_t s; _wrap(dog_get_size, _handle, file_id, &s))
@@ -172,15 +155,6 @@ public:
 			std::ranges::size(data) * sizeof(std::ranges::range_value_t<R>),
 			std::ranges::cdata(data)
 		);
-	}
-
-	[[nodiscard]]
-	std::optional<std::chrono::utc_seconds> get_time() const noexcept
-	{
-		std::optional<std::chrono::utc_seconds> ret;
-		if (dog_time_t time; _wrap(dog_get_time, _handle, &time))
-			ret.emplace(std::chrono::seconds(time));
-		return ret;
 	}
 
 	[[nodiscard]]
