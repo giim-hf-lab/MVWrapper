@@ -29,6 +29,8 @@ struct superdog final
 private:
 	#include "./superdog.vc"
 
+	static constexpr const auto _DEFAULT_TIME_TOLERANCE = std::chrono::seconds(1);
+
 	template<typename F, typename... Args>
 		requires std::is_invocable_r_v<dog_status_t, F, Args...>
 	[[nodiscard]]
@@ -47,7 +49,7 @@ public:
 
 	superdog() noexcept : _handle(DOG_INVALID_HANDLE_VALUE) {}
 
-	~superdog() noexcept
+	inline ~superdog() noexcept
 	{
 		if (not close())
 			std::terminate();
@@ -68,8 +70,11 @@ public:
 			std::terminate();
 		_handle = other._handle;
 		other._handle = DOG_INVALID_HANDLE_VALUE;
+
+		return *this;
 	}
 
+	[[nodiscard]]
 	operator bool() const noexcept
 	{
 		return _handle != DOG_INVALID_HANDLE_VALUE;
@@ -86,36 +91,32 @@ public:
 	{
 		if (_handle == DOG_INVALID_HANDLE_VALUE)
 			return true;
-		if (_wrap(dog_logout, _handle))
-		{
-			_handle = DOG_INVALID_HANDLE_VALUE;
-			return true;
-		}
-		return false;
+		auto ret = _wrap(dog_logout, _handle);
+		_handle = DOG_INVALID_HANDLE_VALUE;
+		return ret;
 	}
 
-	template<std::ranges::contiguous_range R>
 	[[nodiscard]]
-	bool encrypt(R& data) const noexcept
+	bool encrypt(char *data, size_t size) const noexcept
 	{
-		return _wrap(
-			dog_encrypt,
-			_handle,
-			std::ranges::data(data),
-			std::ranges::size(data) * sizeof(std::ranges::range_value_t<R>)
-		);
+		return _wrap(dog_encrypt, _handle, data, size);
 	}
 
-	template<std::ranges::contiguous_range R>
 	[[nodiscard]]
-	bool decrypt(R& data) const noexcept
+	inline bool encrypt(std::ranges::contiguous_range auto& data) const noexcept
 	{
-		return _wrap(
-			dog_decrypt,
-			_handle,
-			std::ranges::data(data),
-			std::ranges::size(data) * sizeof(std::ranges::range_value_t<R>)
-		);
+		return encrypt(std::ranges::data(data), std::ranges::size(data));
+	}
+
+	bool decrypt(char *data, size_t size) const noexcept
+	{
+		return _wrap(dog_decrypt, _handle, data, size);
+	}
+
+	[[nodiscard]]
+	inline bool decrypt(std::ranges::contiguous_range auto& data) const noexcept
+	{
+		return decrypt(std::ranges::data(data), std::ranges::size(data));
 	}
 
 	[[nodiscard]]
@@ -129,43 +130,91 @@ public:
 		return false;
 	}
 
-	template<std::ranges::contiguous_range R>
 	[[nodiscard]]
-	bool read(R& data, file_id_type file_id, size_t offset = 0) const noexcept
+	bool read(file_id_type file_id, char *data, size_t size, size_t offset = 0) const noexcept
 	{
-		return _wrap(
-			dog_read,
-			_handle,
-			file_id,
-			offset,
-			std::ranges::size(data) * sizeof(std::ranges::range_value_t<R>),
-			std::ranges::data(data)
-		);
+		return _wrap(dog_read, _handle, file_id, offset, size, data);
 	}
 
-	template<std::ranges::contiguous_range R>
 	[[nodiscard]]
-	bool write(const R& data, file_id_type file_id, size_t offset = 0) const noexcept
+	inline bool read(
+		file_id_type file_id,
+		std::ranges::contiguous_range auto& data,
+		size_t offset = 0
+	) const noexcept
 	{
-		return _wrap(
-			dog_write,
-			_handle,
-			file_id,
-			offset,
-			std::ranges::size(data) * sizeof(std::ranges::range_value_t<R>),
-			std::ranges::cdata(data)
-		);
+		return read(file_id, std::ranges::data(data), std::ranges::size(data), offset);
+	}
+
+	[[nodiscard]]
+	bool write(file_id_type file_id, const char *data, size_t size, size_t offset = 0) const noexcept
+	{
+		return _wrap(dog_write, _handle, file_id, offset, size, data);
+	}
+
+	[[nodiscard]]
+	inline bool write(
+		file_id_type file_id,
+		const std::ranges::contiguous_range auto& data,
+		size_t offset = 0
+	) const noexcept
+	{
+		return write(file_id, std::ranges::cdata(data), std::ranges::size(data), offset);
 	}
 
 	[[nodiscard]]
 	bool get_time(std::chrono::utc_seconds& time) const noexcept
 	{
-		if (dog_time_t t; _wrap(dog_get_time, _handle, &t))
+		if (dog_time_t dog_time; _wrap(dog_get_time, _handle, &dog_time))
 		{
-			time = std::chrono::utc_seconds(std::chrono::seconds(t));
+			time = std::chrono::utc_seconds(std::chrono::seconds(dog_time));
 			return true;
 		}
 		return false;
+	}
+
+	template<typename Rep, typename Period>
+	[[nodiscard]]
+	bool check_expiry(
+		const std::chrono::utc_seconds& expiry,
+		const std::chrono::duration<Rep, Period>& tolerance
+	) const noexcept
+	{
+		dog_time_t dog_time;
+		return _wrap(dog_get_time, _handle, &dog_time) and
+			std::chrono::utc_seconds(std::chrono::seconds(dog_time)) <= expiry + tolerance;
+	}
+
+	template<typename Clock, typename Duration, typename Rep, typename Period>
+	[[nodiscard]]
+	inline bool check_expiry(
+		const std::chrono::time_point<Clock, Duration>& expiry,
+		const std::chrono::duration<Rep, Period>& tolerance
+	) const noexcept
+	{
+		return check_expiry(std::chrono::time_point_cast<std::chrono::utc_seconds>(expiry), tolerance);
+	}
+
+	template<typename Clock, typename Duration>
+	inline bool check_expiry(const std::chrono::time_point<Clock, Duration>& expiry) const noexcept
+	{
+		return check_expiry(expiry, _DEFAULT_TIME_TOLERANCE);
+	}
+
+	template<typename Rep, typename Period>
+	[[nodiscard]]
+	bool check_time(const std::chrono::duration<Rep, Period>& tolerance) const noexcept
+	{
+		dog_time_t dog_time;
+		return _wrap(dog_get_time, _handle, &dog_time) and std::chrono::abs(
+			std::chrono::utc_seconds(std::chrono::seconds(dog_time)) - std::chrono::utc_clock::now()
+		) <= tolerance;
+	}
+
+	[[nodiscard]]
+	inline bool check_time() const noexcept
+	{
+		return check_time(_DEFAULT_TIME_TOLERANCE);
 	}
 };
 
