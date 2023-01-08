@@ -27,28 +27,36 @@ namespace mv
 {
 
 export
-struct queue final
+struct frame final
 {
-	struct frame final
+	uint64_t device_timestamp, host_timestamp;
+	cv::Mat content;
+
+	frame() noexcept : content() {}
+
+	frame(uint64_t device_timestamp, uint64_t host_timestamp, cv::Mat content) noexcept
+		: device_timestamp(device_timestamp), host_timestamp(host_timestamp), content(std::move(content))
+	{}
+
+	~frame() noexcept = default;
+
+	frame(const frame&) = delete;
+
+	frame(frame&&) noexcept = default;
+
+	frame& operator=(const frame&) = delete;
+
+	frame& operator=(frame&&) noexcept = default;
+
+	operator bool() const noexcept
 	{
-		uint64_t device_timestamp, host_timestamp;
-		cv::Mat content;
+		return not content.empty();
+	}
+};
 
-		frame(uint64_t device_timestamp, uint64_t host_timestamp, cv::Mat content) noexcept
-			: device_timestamp(device_timestamp), host_timestamp(host_timestamp), content(std::move(content))
-		{}
-
-		~frame() noexcept = default;
-
-		frame(const frame&) = delete;
-
-		frame(frame&&) noexcept = default;
-
-		frame& operator=(const frame&) = delete;
-
-		frame& operator=(frame&&) noexcept = default;
-	};
-private:
+export
+class queue final
+{
 	friend class device;
 
 	static constexpr cv::RotateFlags _ROTATIONS[] {
@@ -256,7 +264,7 @@ class device final
 #define _MVS_DEVICE_TYPE_EXPAND(ON, EN) _MVS_ENUM_EXPAND(, _DEVICE, ON, , , EN)
 #define _MVS_DEVICE_TYPE_SIMPLE_EXPAND(N) _MVS_DEVICE_TYPE_EXPAND(N, N)
 public:
-	_MVS_DEFINE_ENUM(type)
+	_MVS_DEFINE_ENUM(device_type)
 	{
 		_MVS_DEVICE_TYPE_EXPAND(UNKNOW, UNKNOWN),
 		_MVS_DEVICE_TYPE_EXPAND(GIGE, GIG_E),
@@ -346,9 +354,9 @@ private:
 
 	void *_handle;
 	std::string _serial;
-	type _type;
+	device_type _type;
 
-	device() noexcept : _handle(), _serial(), _type(type::UNKNOWN) {}
+	device() noexcept : _handle(), _serial(), _type(device_type::UNKNOWN) {}
 
 	template<typename CF>
 	[[nodiscard]]
@@ -358,16 +366,16 @@ private:
 			return false;
 
 		std::string s;
-		auto t = static_cast<type>(device_info->nTLayerType);
+		auto t = static_cast<device_type>(device_info->nTLayerType);
 		switch (t)
 		{
-			case type::GIG_E:
+			case device_type::GIG_E:
 				s = reinterpret_cast<const char *>(device_info->SpecialInfo.stGigEInfo.chSerialNumber);
 				break;
-			case type::USB:
+			case device_type::USB:
 				s = reinterpret_cast<const char *>(device_info->SpecialInfo.stUsb3VInfo.chSerialNumber);
 				break;
-			case type::CAMERA_LINK:
+			case device_type::CAMERA_LINK:
 				s = reinterpret_cast<const char *>(device_info->SpecialInfo.stCamLInfo.chSerialNumber);
 				break;
 			default:
@@ -384,7 +392,7 @@ private:
 	}
 public:
 	[[nodiscard]]
-	static std::vector<device> enumerate(type type) noexcept
+	static std::vector<device> enumerate(device_type type) noexcept
 	{
 		if (
 			MV_CC_DEVICE_INFO_LIST devices_info_list;
@@ -406,7 +414,7 @@ public:
 	}
 
 	[[nodiscard]]
-	static std::vector<device> enumerate(type type, const std::string& log_path) noexcept
+	static std::vector<device> enumerate(device_type type, const std::string& log_path) noexcept
 	{
 		if (not _wrap(MV_CC_SetSDKLogPath, log_path.c_str()))
 			return {};
@@ -442,7 +450,7 @@ public:
 	device(device&& other) noexcept : _handle(other._handle), _serial(std::move(other._serial)), _type(other._type)
 	{
 		other._handle = nullptr;
-		other._type = type::UNKNOWN;
+		other._type = device_type::UNKNOWN;
 	}
 
 	device& operator=(const device&) = delete;
@@ -468,7 +476,7 @@ public:
 	}
 
 	[[nodiscard]]
-	type type() const noexcept
+	device_type type() const noexcept
 	{
 		return _type;
 	}
@@ -481,7 +489,7 @@ public:
 			auto ret = _wrap(MV_CC_DestroyHandle, _handle);
 			_handle = nullptr;
 			_serial.clear();
-			_type = type::UNKNOWN;
+			_type = device_type::UNKNOWN;
 			return ret;
 		}
 		return true;

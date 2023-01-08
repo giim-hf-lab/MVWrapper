@@ -1,23 +1,35 @@
-#ifndef __GEMALTO_SUPERDOG_HPP__
-#define __GEMALTO_SUPERDOG_HPP__
-
-#ifndef __GEMALTO_MODULE_EXPORT__
+module;
 
 #include <cstddef>
 
 #include <chrono>
 #include <ranges>
+#include <type_traits>
+#include <utility>
 
 #include <dog_api.h>
 
-#endif
+export module gemalto;
+
+namespace
+{
+
+#include "superdog.vc"
+
+template<typename F, typename... Args>
+[[nodiscard]]
+static inline bool _wrap(F&& f, Args&&... args) noexcept
+	requires std::is_invocable_r_v<dog_status_t, F, Args...>
+{
+	return f(std::forward<Args>(args)...) == DOG_STATUS_OK;
+}
+
+}
 
 namespace gemalto
 {
 
-#ifdef __GEMALTO_MODULE_EXPORT__
-__GEMALTO_MODULE_EXPORT__
-#endif
+export
 struct superdog final
 {
 	using feature_type = typename dog_feature_t;
@@ -31,34 +43,63 @@ private:
 	dog_handle_t _handle;
 public:
 	[[nodiscard]]
-	static bool get_version(version& v) noexcept;
+	static bool get_version(version& v) noexcept
+	{
+		return _wrap(dog_get_version, &v.major, &v.minor, &v.server, &v.number, _SUPERDOG_VENDOR_CODE);
+	}
 
-	superdog() noexcept;
+	superdog() noexcept : _handle(DOG_INVALID_HANDLE_VALUE) {}
 
-	~superdog() noexcept;
+	~superdog() noexcept
+	{
+		if (not close())
+			std::terminate();
+	}
 
 	superdog(const superdog&) = delete;
 
-	superdog(superdog&& other) noexcept;
+	superdog(superdog&& other) noexcept : _handle(other._handle)
+	{
+		other._handle = DOG_INVALID_HANDLE_VALUE;
+	}
 
 	superdog& operator=(const superdog&) = delete;
 
 	superdog& operator=(superdog&&) = delete;
 
 	[[nodiscard]]
-	operator bool() const noexcept;
+	operator bool() const noexcept
+	{
+		return _handle != DOG_INVALID_HANDLE_VALUE;
+	}
 
 	[[nodiscard]]
-	bool open() noexcept;
+	bool open(feature_type feature) noexcept
+	{
+		return _handle == DOG_INVALID_HANDLE_VALUE and _wrap(dog_login, feature, _SUPERDOG_VENDOR_CODE, &_handle);
+	}
 
 	[[nodiscard]]
-	bool open(feature_type feature) noexcept;
+	inline bool open() noexcept
+	{
+		return open(DOG_DEFAULT_FID);
+	}
 
 	[[nodiscard]]
-	bool close() noexcept;
+	bool close() noexcept
+	{
+		if (_handle == DOG_INVALID_HANDLE_VALUE)
+			return true;
+		auto ret = _wrap(dog_logout, _handle);
+		_handle = DOG_INVALID_HANDLE_VALUE;
+		return ret;
+	}
 
 	[[nodiscard]]
-	bool encrypt(char *data, size_t size) const noexcept;
+	bool encrypt(char *data, size_t size) const noexcept
+	{
+		return _wrap(dog_encrypt, _handle, data, size);
+	}
 
 	[[nodiscard]]
 	inline bool encrypt(std::ranges::contiguous_range auto& data) const noexcept
@@ -67,7 +108,10 @@ public:
 	}
 
 	[[nodiscard]]
-	bool decrypt(char *data, size_t size) const noexcept;
+	bool decrypt(char *data, size_t size) const noexcept
+	{
+		return _wrap(dog_decrypt, _handle, data, size);
+	}
 
 	[[nodiscard]]
 	inline bool decrypt(std::ranges::contiguous_range auto& data) const noexcept
@@ -76,10 +120,21 @@ public:
 	}
 
 	[[nodiscard]]
-	bool get_size(file_id_type file_id, size_t& size) const noexcept;
+	bool get_size(file_id_type file_id, size_t& size) const noexcept
+	{
+		if (dog_size_t s; _wrap(dog_get_size, _handle, file_id, &s))
+		{
+			size = s;
+			return true;
+		}
+		return false;
+	}
 
 	[[nodiscard]]
-	bool read(file_id_type file_id, char *data, size_t size, size_t offset = 0) const noexcept;
+	bool read(file_id_type file_id, char *data, size_t size, size_t offset = 0) const noexcept
+	{
+		return _wrap(dog_read, _handle, file_id, offset, size, data);
+	}
 
 	[[nodiscard]]
 	inline bool read(
@@ -92,7 +147,10 @@ public:
 	}
 
 	[[nodiscard]]
-	bool write(file_id_type file_id, const char *data, size_t size, size_t offset = 0) const noexcept;
+	bool write(file_id_type file_id, const char *data, size_t size, size_t offset = 0) const noexcept
+	{
+		return _wrap(dog_write, _handle, file_id, offset, size, data);
+	}
 
 	[[nodiscard]]
 	inline bool write(
@@ -105,7 +163,15 @@ public:
 	}
 
 	[[nodiscard]]
-	bool get_time(std::chrono::utc_seconds& time) const noexcept;
+	bool get_time(std::chrono::utc_seconds& time) const noexcept
+	{
+		if (dog_time_t dog_time; _wrap(dog_get_time, _handle, &dog_time))
+		{
+			time = std::chrono::utc_seconds(std::chrono::seconds(dog_time));
+			return true;
+		}
+		return false;
+	}
 
 	template<typename Duration, typename Rep, typename Period>
 	[[nodiscard]]
@@ -157,5 +223,3 @@ public:
 };
 
 }
-
-#endif
