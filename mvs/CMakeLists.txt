@@ -26,7 +26,6 @@ set_target_properties(mvs_api PROPERTIES
 if (MSVC)
 	create_msvc_cxx_module_target(
 		TARGET mvs
-		PRIMARY_INTERFACE mvs.ixx
 		COMPILE_DEFINITIONS
 			MSGPACK_USE_DEFINE_MAP
 		SYSTEM_INCLUDE_DIRECTORIES
