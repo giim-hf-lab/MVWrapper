@@ -32,7 +32,7 @@ struct frame final
 	uint64_t device_timestamp, host_timestamp;
 	cv::Mat content;
 
-	frame() noexcept : content() {}
+	frame() noexcept : device_timestamp(), host_timestamp(), content() {}
 
 	frame(uint64_t device_timestamp, uint64_t host_timestamp, cv::Mat content) noexcept
 		: device_timestamp(device_timestamp), host_timestamp(host_timestamp), content(std::move(content))
