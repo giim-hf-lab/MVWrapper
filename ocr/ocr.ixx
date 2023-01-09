@@ -15,16 +15,11 @@ module;
 
 #include <clipper2/clipper.core.h>
 #include <clipper2/clipper.offset.h>
+#include <mio/mmap.hpp>
 #include <onnxruntime/core/session/onnxruntime_c_api.h>
 #include <onnxruntime/core/session/onnxruntime_cxx_api.h>
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
-
-#define _KEEP_MOVE_CONSTRUCTOR_ONLY(CLASS_NAME) \
-	CLASS_NAME(const CLASS_NAME&) = delete; \
-	CLASS_NAME(CLASS_NAME&&) noexcept = default; \
-	CLASS_NAME& operator=(const CLASS_NAME&) = delete; \
-	CLASS_NAME& operator=(CLASS_NAME&&) = delete;
 
 export module ocr;
 
@@ -36,43 +31,55 @@ concept arithmetic = std::is_arithmetic_v<T>;
 
 }
 
+namespace cv
+{
+
+template<std::arithmetic PointType, size_t... Indices, std::arithmetic... PointTypes>
+[[nodiscard]]
+static inline Mat _from_points(std::index_sequence<Indices...>, const Point_<PointTypes>&... points)
+{
+	Mat output(sizeof...(PointTypes), 1, CV_MAKETYPE(traits::Depth<PointType>::value, 2));
+	((output.at<Point_<PointType>>(Indices, 0) = points), ...);
+	return output;
+}
+
+template<std::arithmetic PointType, std::arithmetic... PointTypes>
+[[nodiscard]]
+inline Mat from_points(const Point_<PointTypes>&... points)
+{
+	return _from_points<PointType>(std::index_sequence_for<PointTypes...> {}, points...);
+}
+
+}
+
 namespace
 {
 
-static Ort::AllocatorWithDefaultOptions _allocator {};
-
-[[nodiscard]]
-static inline Ort::Session _create_session(
-	const std::basic_string<ORTCHAR_T>& model_path,
-	Ort::Env& env,
-	const Ort::SessionOptions& common_options,
-	GraphOptimizationLevel graph_opt_level
-)
-{
-	if (graph_opt_level > GraphOptimizationLevel::ORT_DISABLE_ALL)
-	[[likely]]
-	{
-		auto optimised_model_path = model_path + ORT_TSTR(".opt");
-		auto session_options = common_options.Clone();
-		session_options
-			.SetOptimizedModelFilePath(optimised_model_path.c_str())
-			.SetGraphOptimizationLevel(graph_opt_level);
-		return { env, model_path.c_str(), session_options };
-	}
-	return { env, model_path.c_str(), common_options };
-}
-
-template<std::arithmetic T>
-static inline Ort::Value _empty_tensor(std::integral auto... dimensions)
-{
-	int64_t shapes[] { int64_t(dimensions)... };
-	return Ort::Value::CreateTensor<T>(_allocator, shapes, sizeof...(dimensions));
-}
-
-static const Ort::RunOptions _DEFAULT_RUN_OPTIONS {};
-
 class model final
 {
+	static Ort::AllocatorWithDefaultOptions _allocator;
+
+	[[nodiscard]]
+	static inline Ort::Session _create_session(
+		const std::basic_string<ORTCHAR_T>& model_path,
+		Ort::Env& env,
+		const Ort::SessionOptions& common_options,
+		GraphOptimizationLevel graph_opt_level
+	)
+	{
+		if (graph_opt_level > GraphOptimizationLevel::ORT_DISABLE_ALL)
+		[[likely]]
+		{
+			auto optimised_model_path = model_path + ORT_TSTR(".opt");
+			auto session_options = common_options.Clone();
+			session_options
+				.SetOptimizedModelFilePath(optimised_model_path.c_str())
+				.SetGraphOptimizationLevel(graph_opt_level);
+			return { env, model_path.c_str(), session_options };
+		}
+		return { env, model_path.c_str(), common_options };
+	}
+
 	Ort::Env _env;
 	Ort::Session _session;
 	std::vector<Ort::AllocatedStringPtr> _names;
@@ -83,14 +90,12 @@ class model final
 		size_t input_num,
 		Ort::Value *outputs,
 		size_t output_num,
-		const Ort::RunOptions& run_options = _DEFAULT_RUN_OPTIONS
+		const Ort::RunOptions& run_options = {}
 	)
 	{
 		if (input_num != _input_names.size())
-		[[unlikely]]
 			throw std::runtime_error("model input number mismatch");
 		if (output_num != _output_names.size())
-		[[unlikely]]
 			throw std::runtime_error("model output number mismatch");
 		_session.Run(run_options, _input_names.data(), inputs, input_num, _output_names.data(), outputs, output_num);
 	}
@@ -117,23 +122,19 @@ public:
 			_output_names.emplace_back(_names.emplace_back(_session.GetOutputNameAllocated(i, _allocator)).get());
 	}
 
-	~model() noexcept = default;
-
-	_KEEP_MOVE_CONSTRUCTOR_ONLY(model)
-
-	inline void run(
+	void run(
 		const Ort::Value& input,
 		Ort::Value& output,
-		const Ort::RunOptions& run_options = _DEFAULT_RUN_OPTIONS
+		const Ort::RunOptions& run_options = {}
 	)
 	{
 		_run(&input, 1, &output, 1, run_options);
 	}
 
-	inline void run(
+	void run(
 		const std::ranges::contiguous_range auto& inputs,
 		std::ranges::contiguous_range auto& outputs,
-		const Ort::RunOptions& run_options = _DEFAULT_RUN_OPTIONS
+		const Ort::RunOptions& run_options = {}
 	)
 	{
 		_run(
@@ -146,36 +147,7 @@ public:
 	}
 };
 
-}
-
-namespace cv
-{
-
-template<typename>
-struct depths final
-{
-	static constexpr inline int make(int channels) noexcept;
-};
-
-#define _CV_SUPP_MAKE_DEPTHS(TYPE, VALUE) \
-constexpr inline int depths<TYPE>::make(int channels) noexcept \
-{ \
-	return CV_MAKETYPE(VALUE, channels); \
-}
-
-_CV_SUPP_MAKE_DEPTHS(uint8_t, CV_8U)
-
-_CV_SUPP_MAKE_DEPTHS(int8_t, CV_8S)
-
-_CV_SUPP_MAKE_DEPTHS(uint16_t, CV_16U)
-
-_CV_SUPP_MAKE_DEPTHS(int16_t, CV_16S)
-
-_CV_SUPP_MAKE_DEPTHS(int32_t, CV_32S)
-
-_CV_SUPP_MAKE_DEPTHS(float, CV_32F)
-
-_CV_SUPP_MAKE_DEPTHS(double, CV_64F)
+Ort::AllocatorWithDefaultOptions model::_allocator {};
 
 }
 
@@ -185,49 +157,26 @@ namespace ocr
 namespace
 {
 
-template<std::arithmetic PointType, size_t... Indices, std::arithmetic... PointTypes>
-[[nodiscard]]
-static inline cv::Mat _points_to_mat_impl(std::index_sequence<Indices...>, const cv::Point_<PointTypes>&... points)
-{
-	cv::Mat output(sizeof...(PointTypes), 1, cv::depths<PointType>::make(2));
-	((output.at<cv::Point_<PointType>>(Indices, 0) = points), ...);
-	return output;
-}
-
-template<std::arithmetic PointType, std::arithmetic... PointTypes>
-[[nodiscard]]
-static inline cv::Mat _points_to_mat(const cv::Point_<PointTypes>&... points)
-{
-	return _points_to_mat_impl<PointType>(std::index_sequence_for<PointTypes...> {}, points...);
-}
-
-[[nodiscard]]
-static inline Ort::SessionOptions _default_options() noexcept
+static const auto _GLOBAL_DEFAULT_OPTIONS = []
 {
 	Ort::SessionOptions session_options;
+	OrtCUDAProviderOptions cuda_options;
 	session_options
 		.EnableCpuMemArena()
 		.EnableMemPattern()
 		.DisableProfiling()
-		.AppendExecutionProvider_CUDA(OrtCUDAProviderOptions {});
+		.AppendExecutionProvider_CUDA(cuda_options);
 	return session_options;
-}
+}();
 
-static const auto _GLOBAL_DEFAULT_OPTIONS = _default_options();
+static const auto _OPENCV_MEM_INFO = Ort::MemoryInfo::CreateCpu(
+	OrtAllocatorType::OrtInvalidAllocator,
+	OrtMemType::OrtMemTypeCPU
+);
 
 static const auto _BLACK = cv::Scalar::all(0), _WHITE = cv::Scalar::all(255);
 
 static const auto _kernel_2x2 = cv::getStructuringElement(cv::MorphShapes::MORPH_RECT, { 2, 2 });
-
-static inline void _split_channels(const cv::Mat& mat, float *pos)
-{
-	auto stride = mat.rows * mat.cols;
-	std::vector<cv::Mat> channels;
-	channels.reserve(mat.channels());
-	for (auto i = 0; i < mat.channels(); ++i)
-		channels.emplace_back(mat.rows, mat.cols, CV_32FC1, pos + i * stride);
-	cv::split(mat, channels.data());
-}
 
 }
 
@@ -244,18 +193,24 @@ struct base
 };
 
 export
+struct trivial final : public base
+{
+	[[nodiscard]]
+	virtual bool run(const cv::Mat& src, cv::Mat& dest) noexcept override
+	{
+		return false;
+	}
+};
+
+export
 class resize final : public base
 {
 	cv::Size _size;
 public:
 	resize(cv::Size size) noexcept : _size(std::move(size)) {}
 
-	virtual ~resize() noexcept override = default;
-
-	_KEEP_MOVE_CONSTRUCTOR_ONLY(resize)
-
 	[[nodiscard]]
-	virtual inline bool run(const cv::Mat& src, cv::Mat& dest) override
+	virtual bool run(const cv::Mat& src, cv::Mat& dest) override
 	{
 		if (src.size() == _size)
 			return false;
@@ -270,14 +225,10 @@ class zoom final : public base
 	size_t _side_len;
 	bool _min_side;
 public:
-	zoom(size_t side_len, bool min_side = true) noexcept : _side_len(side_len), _min_side(min_side) {}
-
-	virtual ~zoom() noexcept override = default;
-
-	_KEEP_MOVE_CONSTRUCTOR_ONLY(zoom)
+	zoom(size_t side_len, bool min_side) noexcept : _side_len(side_len), _min_side(min_side) {}
 
 	[[nodiscard]]
-	virtual inline bool run(const cv::Mat& src, cv::Mat& dest) override
+	virtual bool run(const cv::Mat& src, cv::Mat& dest) override
 	{
 		// https://github.com/PaddlePaddle/PaddleOCR/blob/v2.6.0/ppocr/data/imaug/operators.py#L254-L301
 
@@ -286,7 +237,7 @@ public:
 		if (
 			_min_side and height <= width and height < _side_len or
 			not _min_side and height >= width and height > _side_len
-			)
+		)
 		{
 			width *= double(_side_len) / height;
 			height = _side_len;
@@ -295,7 +246,7 @@ public:
 		else if (
 			_min_side and height > width and width < _side_len or
 			not _min_side and height < width and width > _side_len
-			)
+		)
 		{
 			height *= double(_side_len) / width;
 			width = _side_len;
@@ -322,6 +273,7 @@ public:
 
 }
 
+export
 template<typename T>
 concept scaler = std::derived_from<T, scalers::base>;
 
@@ -334,77 +286,98 @@ struct base
 	virtual ~base() noexcept = default;
 
 	[[nodiscard]]
-	virtual bool run(const cv::Mat& image, std::vector<cv::RotatedRect>& boxes) = 0;
+	virtual bool run(const cv::Mat& src, cv::Mat& scores) = 0;
 };
 
 export
-struct trivial final : base
+struct trivial final : public base
 {
 	[[nodiscard]]
-	virtual inline bool run(const cv::Mat& image, std::vector<cv::RotatedRect>& boxes) override
+	virtual bool run(const cv::Mat& src, cv::Mat& scores) noexcept override
 	{
 		return false;
 	}
 };
 
 export
-enum class algorithms
+class concrete final : public base
 {
-	DB
-};
-
-export
-template<algorithms>
-struct concrete final : public base
-{
-	struct parameters;
-private:
-	parameters _parameters;
+	cv::Scalar _mean, _stddev;
 	model _model;
-
-	inline void _extract(const cv::Mat& scores, std::vector<cv::RotatedRect>& boxes) const;
 public:
 	concrete(
-		parameters parameters,
+		cv::Scalar mean,
+		cv::Scalar stddev,
 		const std::basic_string<ORTCHAR_T>& model_path,
 		const Ort::SessionOptions& options,
 		GraphOptimizationLevel graph_opt_level = GraphOptimizationLevel::ORT_ENABLE_EXTENDED
-	) :
-		_parameters(std::move(parameters)),
-		_model(model_path, options, graph_opt_level)
+	) : _mean(std::move(mean)), _stddev(std::move(stddev)), _model(model_path, options, graph_opt_level)
 	{}
-
-	concrete(
-		parameters parameters,
-		const std::basic_string<ORTCHAR_T>& model_path,
-		GraphOptimizationLevel graph_opt_level = GraphOptimizationLevel::ORT_ENABLE_EXTENDED
-	) :
-		_parameters(std::move(parameters)),
-		_model(model_path, _GLOBAL_DEFAULT_OPTIONS, graph_opt_level)
-	{}
-
-	virtual ~concrete() noexcept override = default;
-
-	_KEEP_MOVE_CONSTRUCTOR_ONLY(concrete)
 
 	[[nodiscard]]
-	virtual inline bool run(const cv::Mat& image, std::vector<cv::RotatedRect>& boxes) override
+	virtual bool run(const cv::Mat& src, cv::Mat& scores) noexcept override
 	{
-		auto input_tensor = _empty_tensor<float>(1, 3, image.rows, image.cols);
-		_split_channels(image, input_tensor.GetTensorMutableData<float>());
+		cv::Mat input;
+		cv::subtract(src, _mean, input, cv::noArray(), CV_32FC3);
+		cv::divide(input, _stddev, input, 1, CV_32FC3);
 
-		auto output_tensor = _empty_tensor<float>(1, 1, image.rows, image.cols);
+		auto stride = src.rows * src.cols;
+		input = input.reshape(1, stride).t();
+		scores.create(src.rows, src.cols, CV_32FC1);
+
+		int64_t shapes[] { 1, 3, src.rows, src.cols };
+		auto input_tensor = Ort::Value::CreateTensor<float>(
+			_OPENCV_MEM_INFO,
+			input.ptr<float>(),
+			3 * stride,
+			shapes,
+			4
+		);
+
+		shapes[1] = 1;
+		auto output_tensor = Ort::Value::CreateTensor<float>(
+			_OPENCV_MEM_INFO,
+			scores.ptr<float>(),
+			stride,
+			shapes,
+			4
+		);
+
 		_model.run(input_tensor, output_tensor);
-
-		_extract({ image.rows, image.cols, CV_32FC1, output_tensor.GetTensorMutableData<float>() }, boxes);
 		return true;
 	}
 };
 
-export
-using db = concrete<algorithms::DB>;
+}
 
-struct db::parameters final
+export
+template<typename T>
+concept detector = std::derived_from<T, detectors::base>;
+
+namespace extractors
+{
+
+export
+struct base
+{
+	virtual ~base() noexcept = default;
+
+	[[nodiscard]]
+	virtual bool run(const cv::Mat& image, std::vector<cv::RotatedRect>& boxes) = 0;
+};
+
+export
+struct trivial final : public base
+{
+	[[nodiscard]]
+	virtual bool run(const cv::Mat& scores, std::vector<cv::RotatedRect>& boxes) noexcept override
+	{
+		return false;
+	}
+};
+
+export
+struct db final : public base
 {
 	enum class scoring_methods
 	{
@@ -412,15 +385,71 @@ struct db::parameters final
 		APPROXIMATE,
 		ORIGINAL
 	};
+private:
+	template<scoring_methods scoring_method>
+	[[nodiscard]]
+	static inline bool _transform(
+		const cv::Mat& scores,
+		cv::Mat& src,
+		cv::Mat& dest,
+		double box_threshold,
+		double unclip_ratio
+	)
+	{
+		if constexpr (scoring_method == scoring_methods::APPROXIMATE)
+		{
+			cv::approxPolyDP(src, src, 0.002 * cv::arcLength(src, true), true);
+			if (dest.rows < 4)
+				return false;
+		}
 
-	double threshold;
-	bool use_dilation;
-	scoring_methods scoring_method;
-	size_t max_candidates;
-	double box_threshold;
-	double unclip_ratio;
+		// https://github.com/PaddlePaddle/PaddleOCR/blob/v2.6.0/ppocr/postprocess/db_postprocess.py#L182-L218
 
-	parameters(
+		auto bounding = cv::boundingRect(src);
+		cv::Mat mask(bounding.height, bounding.width, CV_8UC1, _BLACK);
+		if constexpr (scoring_method == scoring_methods::BOX)
+		{
+			auto enclosing = cv::minAreaRect(src);
+			cv::Mat vertices(4, 1, CV_32FC2);
+			enclosing.points(vertices.ptr<cv::Point2f>());
+			cv::fillPoly(mask, vertices, _WHITE, cv::LineTypes::LINE_AA, 0, -bounding.tl());
+		}
+		else
+			cv::fillPoly(mask, src, _WHITE, cv::LineTypes::LINE_AA, 0, -bounding.tl());
+
+		if (cv::mean(scores(bounding), mask)[0] < box_threshold)
+			return false;
+
+		// https://github.com/PaddlePaddle/PaddleOCR/blob/v2.6.0/ppocr/postprocess/db_postprocess.py#L151-L157
+
+		Clipper2Lib::Path64 contour_path;
+		contour_path.reserve(src.rows);
+		for (int i = 0; i < src.rows; ++i)
+			contour_path.emplace_back(src.at<Clipper2Lib::Point<int>>(i, 0));
+		Clipper2Lib::ClipperOffset clipper_offset;
+		clipper_offset.AddPaths({ contour_path }, Clipper2Lib::JoinType::Round, Clipper2Lib::EndType::Polygon);
+		auto result = clipper_offset.Execute(cv::contourArea(src) * unclip_ratio / cv::arcLength(src, true));
+		if (result.size() != 1)
+			return false;
+
+		const auto& unclipped = result.front();
+		dest.create(unclipped.size(), 1, CV_32SC2);
+		for (size_t i = 0; i < unclipped.size(); ++i)
+		{
+			const auto& point = unclipped[i];
+			dest.at<Clipper2Lib::Point<int>>(i, 0).Init(point.x, point.y);
+		}
+		return true;
+	}
+
+	double _threshold;
+	bool _use_dilation;
+	scoring_methods _scoring_method;
+	size_t _max_candidates;
+	double _box_threshold;
+	double _unclip_ratio;
+public:
+	db(
 		double threshold,
 		bool use_dilation,
 		scoring_methods scoring_method,
@@ -428,144 +457,75 @@ struct db::parameters final
 		double box_threshold,
 		double unclip_ratio
 	) noexcept :
-		threshold(threshold),
-		use_dilation(use_dilation),
-		scoring_method(scoring_method),
-		max_candidates(max_candidates),
-		box_threshold(box_threshold),
-		unclip_ratio(unclip_ratio)
+		_threshold(threshold),
+		_use_dilation(use_dilation),
+		_scoring_method(scoring_method),
+		_max_candidates(max_candidates),
+		_box_threshold(box_threshold),
+		_unclip_ratio(unclip_ratio)
 	{}
 
-	~parameters() noexcept = default;
+	[[nodiscard]]
+	virtual bool run(const cv::Mat& scores, std::vector<cv::RotatedRect>& boxes) override
+	{
+		// https://github.com/PaddlePaddle/PaddleOCR/blob/v2.6.0/ppocr/postprocess/db_postprocess.py#L230-L235
 
-	parameters(const parameters&) noexcept = default;
+		cv::Mat mask;
+		cv::threshold(scores, mask, _threshold, 255, cv::ThresholdTypes::THRESH_BINARY);
+		if (_use_dilation)
+			cv::dilate(mask, mask, _kernel_2x2);
 
-	parameters(parameters&&) noexcept = default;
+		// https://github.com/PaddlePaddle/PaddleOCR/blob/v2.6.0/ppocr/postprocess/db_postprocess.py#L57-L149
 
-	parameters& operator=(const parameters&) noexcept = default;
+		std::vector<cv::Mat> contours;
+		cv::findContours(
+			mask,
+			contours,
+			cv::RetrievalModes::RETR_LIST,
+			cv::ContourApproximationModes::CHAIN_APPROX_SIMPLE
+		);
 
-	parameters& operator=(parameters&&) noexcept = default;
+		size_t kept = 0;
+
+		#define _OCR_DB_POSTPROCESS_TRANSFORM(LABEL, METHOD) \
+			LABEL: \
+				for (size_t i = 0; i < contours.size() and kept < _max_candidates; ++i) \
+					if (_transform<scoring_methods::METHOD>( \
+						scores, \
+						contours[i], \
+						contours[kept], \
+						_box_threshold, \
+						_unclip_ratio \
+					)) \
+						++kept;
+
+		#define _OCR_DB_POSTPROCESS_TRANSFORM_DIRECT(METHOD) \
+			_OCR_DB_POSTPROCESS_TRANSFORM(case scoring_methods::METHOD, METHOD) \
+				break;
+
+		switch (_scoring_method)
+		{
+			_OCR_DB_POSTPROCESS_TRANSFORM_DIRECT(BOX)
+			_OCR_DB_POSTPROCESS_TRANSFORM_DIRECT(APPROXIMATE)
+			_OCR_DB_POSTPROCESS_TRANSFORM(default, ORIGINAL)
+		}
+
+		if (not kept)
+			return;
+		contours.resize(kept);
+
+		boxes.reserve(boxes.size() + kept);
+		for (const auto& contour : contours)
+			boxes.push_back(cv::minAreaRect(contour));
+		return true;
+	}
 };
-
-namespace
-{
-
-template<db::parameters::scoring_methods scoring_method>
-[[nodiscard]]
-static inline bool _db_transform(
-	const cv::Mat& scores,
-	cv::Mat& src,
-	cv::Mat& dest,
-	double box_threshold,
-	double unclip_ratio
-)
-{
-	if constexpr (scoring_method == db::parameters::scoring_methods::APPROXIMATE)
-	{
-		cv::approxPolyDP(src, src, 0.002 * cv::arcLength(src, true), true);
-		if (dest.rows < 4)
-			return false;
-	}
-
-	// https://github.com/PaddlePaddle/PaddleOCR/blob/v2.6.0/ppocr/postprocess/db_postprocess.py#L182-L218
-
-	auto bounding = cv::boundingRect(src);
-	cv::Mat mask(bounding.height, bounding.width, CV_8UC1, _BLACK);
-	if constexpr (scoring_method == db::parameters::scoring_methods::BOX)
-	{
-		auto enclosing = cv::minAreaRect(src);
-		cv::Mat vertices(4, 1, CV_32FC2);
-		enclosing.points(vertices.ptr<cv::Point2f>());
-		cv::fillPoly(mask, vertices, _WHITE, cv::LineTypes::LINE_AA, 0, -bounding.tl());
-	}
-	else
-		cv::fillPoly(mask, src, _WHITE, cv::LineTypes::LINE_AA, 0, -bounding.tl());
-
-	if (cv::mean(scores(bounding), mask)[0] < box_threshold)
-		return false;
-
-	// https://github.com/PaddlePaddle/PaddleOCR/blob/v2.6.0/ppocr/postprocess/db_postprocess.py#L151-L157
-
-	Clipper2Lib::Path64 contour_path;
-	contour_path.reserve(src.rows);
-	for (int i = 0; i < src.rows; ++i)
-		contour_path.emplace_back(src.at<Clipper2Lib::Point<int>>(i, 0));
-	Clipper2Lib::ClipperOffset clipper_offset;
-	clipper_offset.AddPaths({ contour_path }, Clipper2Lib::JoinType::Round, Clipper2Lib::EndType::Polygon);
-	auto result = clipper_offset.Execute(cv::contourArea(src) * unclip_ratio / cv::arcLength(src, true));
-	if (result.size() != 1)
-		return false;
-
-	const auto& unclipped = result.front();
-	dest.create(unclipped.size(), 1, CV_32SC2);
-	for (size_t i = 0; i < unclipped.size(); ++i)
-	{
-		const auto& point = unclipped[i];
-		dest.at<Clipper2Lib::Point<int>>(i, 0).Init(point.x, point.y);
-	}
-	return true;
-}
-
-}
-
-inline void db::_extract(const cv::Mat& scores, std::vector<cv::RotatedRect>& boxes) const
-{
-	// https://github.com/PaddlePaddle/PaddleOCR/blob/v2.6.0/ppocr/postprocess/db_postprocess.py#L230-L235
-
-	cv::Mat mask;
-	cv::threshold(scores, mask, _parameters.threshold, 255, cv::ThresholdTypes::THRESH_BINARY);
-	if (_parameters.use_dilation)
-		cv::dilate(mask, mask, _kernel_2x2);
-
-	// https://github.com/PaddlePaddle/PaddleOCR/blob/v2.6.0/ppocr/postprocess/db_postprocess.py#L57-L149
-
-	std::vector<cv::Mat> contours;
-	cv::findContours(
-		mask,
-		contours,
-		cv::RetrievalModes::RETR_LIST,
-		cv::ContourApproximationModes::CHAIN_APPROX_SIMPLE
-	);
-
-	size_t kept = 0;
-
-#define _OCR_DB_POSTPROCESS_TRANSFORM(LABEL, METHOD) \
-		LABEL: \
-			for (size_t i = 0; i < contours.size() and kept < _parameters.max_candidates; ++i) \
-				if (_db_transform<parameters::scoring_methods::METHOD>( \
-					scores, \
-					contours[i], \
-					contours[kept], \
-					_parameters.box_threshold, \
-					_parameters.unclip_ratio \
-				)) \
-					++kept;
-
-#define _OCR_DB_POSTPROCESS_TRANSFORM_DIRECT(METHOD) \
-		_OCR_DB_POSTPROCESS_TRANSFORM(case parameters::scoring_methods::METHOD, METHOD) \
-			break;
-
-	switch (_parameters.scoring_method)
-	{
-		_OCR_DB_POSTPROCESS_TRANSFORM_DIRECT(BOX)
-		_OCR_DB_POSTPROCESS_TRANSFORM_DIRECT(APPROXIMATE)
-		_OCR_DB_POSTPROCESS_TRANSFORM(default, ORIGINAL)
-	}
-
-	if (not kept)
-		return;
-	contours.resize(kept);
-
-	boxes.reserve(boxes.size() + kept);
-	for (const auto& contour : contours)
-		boxes.push_back(cv::minAreaRect(contour));
-}
 
 }
 
 export
 template<typename T>
-concept detector = std::derived_from<T, detectors::base>;
+concept extractor = std::derived_from<T, extractors::base>;
 
 namespace classifiers
 {
@@ -576,118 +536,97 @@ struct base
 	virtual ~base() noexcept = default;
 
 	[[nodiscard]]
-	virtual inline std::vector<size_t> run(const std::vector<cv::Mat>& fragments) = 0;
+	virtual std::vector<size_t> run(const std::vector<cv::Mat>& fragments) = 0;
 };
 
 export
 struct trivial final : public base
 {
 	[[nodiscard]]
-	virtual inline std::vector<size_t> run(const std::vector<cv::Mat>& fragments) override
+	virtual std::vector<size_t> run(const std::vector<cv::Mat>& fragments) override
 	{
 		return {};
 	}
 };
 
 export
-struct concrete final : public base
+class concrete final : public base
 {
 	static const cv::Scalar _mean, _stddev;
 
-	struct parameters final
-	{
-		size_t batch_size;
-		cv::Size shape;
-		double threshold;
-
-		parameters(
-			size_t batch_size,
-			cv::Size shape,
-			double threshold
-		) :
-			batch_size(batch_size),
-			shape(std::move(shape)),
-			threshold(threshold)
-		{}
-
-		~parameters() noexcept = default;
-
-		parameters(const parameters&) noexcept = default;
-
-		parameters(parameters&&) noexcept = default;
-
-		parameters& operator=(const parameters&) noexcept = default;
-
-		parameters& operator=(parameters&&) noexcept = default;
-	};
-private:
-	parameters _parameters;
+	size_t _batch_size;
+	cv::Size _shape;
+	double _threshold;
 	model _model;
 public:
 	concrete(
-		parameters parameters,
+		size_t batch_size,
+		cv::Size shape,
+		double threshold,
 		const std::basic_string<ORTCHAR_T>& model_path,
 		const Ort::SessionOptions& options,
 		GraphOptimizationLevel graph_opt_level = GraphOptimizationLevel::ORT_ENABLE_EXTENDED
 	) :
-		_parameters(std::move(parameters)),
+		_batch_size(batch_size),
+		_shape(std::move(shape)),
+		_threshold(threshold),
 		_model(model_path, options, graph_opt_level)
 	{}
 
-	concrete(
-		parameters parameters,
-		const std::basic_string<ORTCHAR_T>& model_path,
-		GraphOptimizationLevel graph_opt_level = GraphOptimizationLevel::ORT_ENABLE_EXTENDED
-	) :
-		_parameters(std::move(parameters)),
-		_model(model_path, _GLOBAL_DEFAULT_OPTIONS, graph_opt_level)
-	{}
-
-	virtual ~concrete() noexcept override = default;
-
-	_KEEP_MOVE_CONSTRUCTOR_ONLY(concrete)
-
 	[[nodiscard]]
-	virtual inline std::vector<size_t> run(const std::vector<cv::Mat>& fragments) override
+	virtual std::vector<size_t> run(const std::vector<cv::Mat>& fragments) override
 	{
-		auto input_tensor = _empty_tensor<float>(
-			_parameters.batch_size,
-			3,
-			_parameters.shape.height,
-			_parameters.shape.width
+		auto stride = _shape.area();
+		cv::Mat input({ int(_batch_size), 3, stride }, CV_32FC1);
+		cv::Mat output(_batch_size, 2, CV_32FC1);
+
+		int64_t shapes[] { _batch_size, 3, _shape.height, _shape.width };
+		auto input_tensor = Ort::Value::CreateTensor<float>(
+			_OPENCV_MEM_INFO,
+			input.ptr<float>(),
+			_batch_size * 3 * stride,
+			shapes,
+			4
 		);
-		auto output_tensor = _empty_tensor<float>(_parameters.batch_size, 2);
-		auto stride = _parameters.shape.area() * 3;
-		auto write_pos = input_tensor.GetTensorMutableData<float>();
+
+		shapes[1] = 2;
+		auto output_tensor = Ort::Value::CreateTensor<float>(
+			_OPENCV_MEM_INFO,
+			output.ptr<float>(),
+			_batch_size * 2,
+			shapes,
+			2
+		);
+
 		std::vector<size_t> ret;
 		ret.reserve(fragments.size());
-		for (size_t i = 0; i < fragments.size(); i += _parameters.batch_size)
+		for (size_t i = 0; i < fragments.size(); i += _batch_size)
 		{
-			size_t current_batch = std::min(_parameters.batch_size, fragments.size() - i);
+			size_t current_batch = std::min(_batch_size, fragments.size() - i);
 			for (size_t c = 0, j = i; c < current_batch; ++c, ++j)
 			{
 				cv::Mat tmp;
-				if (const auto& fragment = fragments[j]; fragment.size() == _parameters.shape)
-					fragment.convertTo(tmp, CV_32FC3);
+				if (const auto& fragment = fragments[j]; fragment.size() == _shape)
+					cv::subtract(fragment, _mean, tmp, cv::noArray(), CV_32FC3);
 				else
 				{
-					cv::resize(fragment, tmp, _parameters.shape);
-					tmp.convertTo(tmp, CV_32FC3);
+					cv::resize(fragment, tmp, _shape);
+					cv::subtract(tmp, _mean, tmp, cv::noArray(), CV_32FC3);
 				}
-				tmp -= _mean;
-				tmp /= _stddev;
-				_split_channels(tmp, write_pos + c * stride);
+				cv::divide(tmp, _stddev, tmp, 1, CV_32FC3);
+
+				cv::Mat store(3, stride, CV_32FC1, input.ptr<float>(c, 0, 0));
+				cv::copyTo(tmp.reshape(1, stride).t(), store, cv::noArray());
 			}
-			std::fill_n(write_pos + current_batch * stride, (_parameters.batch_size - current_batch) * stride, 0.0f);
 
 			_model.run(input_tensor, output_tensor);
-			cv::Mat scores(current_batch, 2, CV_32FC1, output_tensor.GetTensorMutableData<float>());
+
 			for (size_t c = 0, j = i; c < current_batch; ++c, ++j)
 			{
 				double score;
 				int index;
-				cv::minMaxIdx(scores.row(c), nullptr, &score, nullptr, &index);
-				if (index and score >= _parameters.threshold)
+				cv::minMaxIdx(output.row(c), nullptr, &score, nullptr, &index);
+				if (index and score >= _threshold)
 					ret.push_back(j);
 			}
 		}
@@ -714,10 +653,141 @@ struct base
 	virtual std::vector<std::tuple<size_t, std::string, double>> run(const std::vector<cv::Mat>& fragments) = 0;
 };
 
-export
-enum class algorithms
+class ctc final : public base
 {
-	CTC
+	static const cv::Scalar _mean, _stddev;
+
+	size_t _batch_size;
+	cv::Size _shape;
+	double _threshold;
+
+	model _model;
+	std::vector<std::vector<char>> _dictionary;
+public:
+	ctc(
+		size_t batch_size,
+		cv::Size shape,
+		double threshold,
+		const std::string& dictionary_path,
+		const std::basic_string<ORTCHAR_T>& model_path,
+		const Ort::SessionOptions& options,
+		GraphOptimizationLevel graph_opt_level = GraphOptimizationLevel::ORT_ENABLE_EXTENDED
+	) :
+		_batch_size(batch_size),
+		_shape(std::move(shape)),
+		_threshold(threshold),
+		_model(model_path, options, graph_opt_level),
+		_dictionary()
+	{
+		mio::mmap_source dict(dictionary_path);
+		std::vector<char> buffer;
+		// Unicode replacement character 0xFFFD in UTF-8
+		_dictionary.emplace_back(0xef, 0xbf, 0xbd);
+		buffer.reserve(4);
+		for (size_t i = 0; i < dict.size(); ++i)
+		{
+			char c = dict[i];
+			switch (c)
+			{
+				case '\r':
+				case '\n':
+					if (buffer.size())
+					{
+						_dictionary.push_back(buffer);
+						buffer.clear();
+					}
+					break;
+				default:
+					buffer.push_back(c);
+			}
+			if (buffer.size())
+				_dictionary.emplace_back(std::move(buffer)).shrink_to_fit();
+			_dictionary.emplace_back(1, ' ');
+			_dictionary.shrink_to_fit();
+		}
+	}
+
+	[[nodiscard]]
+	virtual inline std::vector<std::tuple<size_t, std::string, double>> run(
+		const std::vector<cv::Mat>& fragments
+	) override
+	{
+		auto stride = _shape.area();
+		cv::Mat input({ int(_batch_size), 3, stride }, CV_32FC1);
+		cv::Mat output({ int(_batch_size), 40, int(_dictionary.size()) }, CV_32FC1);
+
+		int64_t shapes[] { _batch_size, 3, _shape.height, _shape.width };
+		auto input_tensor = Ort::Value::CreateTensor<float>(
+			_OPENCV_MEM_INFO,
+			input.ptr<float>(),
+			_batch_size * 3 * stride,
+			shapes,
+			4
+		);
+
+		shapes[1] = 40;
+		shapes[2] = _dictionary.size();
+		auto output_tensor = Ort::Value::CreateTensor<float>(
+			_OPENCV_MEM_INFO,
+			output.ptr<float>(),
+			_batch_size * 40 * _dictionary.size(),
+			shapes,
+			3
+		);
+
+		std::vector<std::tuple<size_t, std::string, double>> ret;
+		ret.reserve(fragments.size());
+		std::string buffer;
+		buffer.reserve(160);
+		for (size_t i = 0; i < fragments.size(); i += _batch_size)
+		{
+			size_t current_batch = std::min(_batch_size, fragments.size() - i);
+			for (size_t c = 0, j = i; c < current_batch; ++c, ++j)
+			{
+				cv::Mat tmp;
+				if (const auto& fragment = fragments[j]; fragment.size() == _shape)
+					cv::subtract(fragment, _mean, tmp, cv::noArray(), CV_32FC3);
+				else
+				{
+					cv::resize(fragment, tmp, _shape);
+					cv::subtract(tmp, _mean, tmp, cv::noArray(), CV_32FC3);
+				}
+				cv::divide(tmp, _stddev, tmp, 1, CV_32FC3);
+
+				cv::Mat store(3, stride, CV_32FC1, input.ptr<float>(c, 0, 0));
+				cv::copyTo(tmp.reshape(1, stride).t(), store, cv::noArray());
+			}
+
+			_model.run(input_tensor, output_tensor);
+
+			for (size_t c = 0, j = i; c < current_batch; ++c, ++j)
+			{
+				cv::Mat scores(40, _dictionary.size(), CV_32FC1, output.ptr<float>(c, 0, 0));
+				int last_index = _dictionary.size();
+				size_t count = 0;
+				double total_score = 0;
+				for (size_t i = 0; i < 40; ++i)
+				{
+					double score;
+					int index;
+					cv::minMaxIdx(scores.row(i), nullptr, &score, nullptr, &index);
+					if (index != last_index)
+					{
+						++count;
+						total_score += score;
+						const auto& word = _dictionary[index];
+						buffer.append(word.data(), word.size());
+						last_index = index;
+					}
+				}
+				total_score /= count;
+				if (total_score >= _threshold)
+					ret.emplace_back(j, buffer, total_score);
+				buffer.clear();
+			}
+		}
+		return ret;
+	}
 };
 
 }
