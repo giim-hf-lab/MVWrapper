@@ -1,6 +1,5 @@
 if (MSVC)
-	create_msvc_cxx_module_target(
-		TARGET ocr
+	create_msvc_cxx_module_target(ocr
 		COMPILE_DEFINITIONS
 			MSGPACK_USE_DEFINE_MAP
 		SYSTEM_INCLUDE_DIRECTORIES
