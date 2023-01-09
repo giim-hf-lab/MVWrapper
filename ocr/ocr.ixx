@@ -27,7 +27,7 @@ namespace std
 {
 
 template<typename T>
-concept arithmetic = std::is_arithmetic_v<T>;
+concept arithmetic = is_arithmetic_v<T>;
 
 }
 
@@ -48,6 +48,30 @@ template<std::arithmetic PointType, std::arithmetic... PointTypes>
 inline Mat from_points(const Point_<PointTypes>&... points)
 {
 	return _from_points<PointType>(std::index_sequence_for<PointTypes...> {}, points...);
+}
+
+inline void crop(const Mat& image, const RotatedRect& box, Mat& vertices, Mat& cropped)
+{
+	vertices.create(4, 1, CV_32FC2);
+	box.points(vertices.ptr<Point2f>());
+	vertices.convertTo(vertices, CV_32SC2);
+
+	Size dest_size = box.size;
+	auto normalised = from_points<int>(
+		Point { 0, dest_size.height },
+		Point { 0, 0 },
+		Point { dest_size.width, 0 },
+		Point { dest_size.width, dest_size.height }
+	);
+
+	warpPerspective(
+		image,
+		cropped,
+		getPerspectiveTransform(vertices, normalised),
+		dest_size,
+		InterpolationFlags::INTER_CUBIC,
+		BorderTypes::BORDER_REPLICATE
+	);
 }
 
 }
@@ -196,7 +220,7 @@ export
 struct trivial final : public base
 {
 	[[nodiscard]]
-	virtual bool run(const cv::Mat& src, cv::Mat& dest) noexcept override
+	virtual bool run(const cv::Mat&, cv::Mat&) noexcept override
 	{
 		return false;
 	}
@@ -286,91 +310,14 @@ struct base
 	virtual ~base() noexcept = default;
 
 	[[nodiscard]]
-	virtual bool run(const cv::Mat& src, cv::Mat& scores) = 0;
+	virtual bool run(const cv::Mat& src, std::vector<cv::RotatedRect>& boxes) = 0;
 };
 
 export
 struct trivial final : public base
 {
 	[[nodiscard]]
-	virtual bool run(const cv::Mat& src, cv::Mat& scores) noexcept override
-	{
-		return false;
-	}
-};
-
-export
-class concrete final : public base
-{
-	cv::Scalar _mean, _stddev;
-	model _model;
-public:
-	concrete(
-		cv::Scalar mean,
-		cv::Scalar stddev,
-		const std::basic_string<ORTCHAR_T>& model_path,
-		const Ort::SessionOptions& options,
-		GraphOptimizationLevel graph_opt_level = GraphOptimizationLevel::ORT_ENABLE_EXTENDED
-	) : _mean(std::move(mean)), _stddev(std::move(stddev)), _model(model_path, options, graph_opt_level)
-	{}
-
-	[[nodiscard]]
-	virtual bool run(const cv::Mat& src, cv::Mat& scores) noexcept override
-	{
-		cv::Mat input;
-		cv::subtract(src, _mean, input, cv::noArray(), CV_32FC3);
-		cv::divide(input, _stddev, input, 1, CV_32FC3);
-
-		auto stride = src.rows * src.cols;
-		input = input.reshape(1, stride).t();
-		scores.create(src.rows, src.cols, CV_32FC1);
-
-		int64_t shapes[] { 1, 3, src.rows, src.cols };
-		auto input_tensor = Ort::Value::CreateTensor<float>(
-			_OPENCV_MEM_INFO,
-			input.ptr<float>(),
-			3 * stride,
-			shapes,
-			4
-		);
-
-		shapes[1] = 1;
-		auto output_tensor = Ort::Value::CreateTensor<float>(
-			_OPENCV_MEM_INFO,
-			scores.ptr<float>(),
-			stride,
-			shapes,
-			4
-		);
-
-		_model.run(input_tensor, output_tensor);
-		return true;
-	}
-};
-
-}
-
-export
-template<typename T>
-concept detector = std::derived_from<T, detectors::base>;
-
-namespace extractors
-{
-
-export
-struct base
-{
-	virtual ~base() noexcept = default;
-
-	[[nodiscard]]
-	virtual bool run(const cv::Mat& image, std::vector<cv::RotatedRect>& boxes) = 0;
-};
-
-export
-struct trivial final : public base
-{
-	[[nodiscard]]
-	virtual bool run(const cv::Mat& scores, std::vector<cv::RotatedRect>& boxes) noexcept override
+	virtual bool run(const cv::Mat&, std::vector<cv::RotatedRect>&) noexcept override
 	{
 		return false;
 	}
@@ -442,6 +389,9 @@ private:
 		return true;
 	}
 
+	cv::Scalar _mean, _stddev;
+	model _model;
+
 	double _threshold;
 	bool _use_dilation;
 	scoring_methods _scoring_method;
@@ -450,28 +400,64 @@ private:
 	double _unclip_ratio;
 public:
 	db(
+		cv::Scalar mean,
+		cv::Scalar stddev,
 		double threshold,
 		bool use_dilation,
 		scoring_methods scoring_method,
 		size_t max_candidates,
 		double box_threshold,
-		double unclip_ratio
-	) noexcept :
+		double unclip_ratio,
+		const std::basic_string<ORTCHAR_T>& model_path,
+		const Ort::SessionOptions& options,
+		GraphOptimizationLevel graph_opt_level = GraphOptimizationLevel::ORT_ENABLE_EXTENDED
+	) :
+		_mean(std::move(mean)), 
+		_stddev(std::move(stddev)),
 		_threshold(threshold),
 		_use_dilation(use_dilation),
 		_scoring_method(scoring_method),
 		_max_candidates(max_candidates),
 		_box_threshold(box_threshold),
-		_unclip_ratio(unclip_ratio)
+		_unclip_ratio(unclip_ratio),
+		_model(model_path, options, graph_opt_level)
 	{}
 
 	[[nodiscard]]
-	virtual bool run(const cv::Mat& scores, std::vector<cv::RotatedRect>& boxes) override
+	virtual bool run(const cv::Mat& src, std::vector<cv::RotatedRect>& boxes) noexcept override
 	{
+		cv::Mat input;
+		cv::subtract(src, _mean, input, cv::noArray(), CV_32FC3);
+		cv::divide(input, _stddev, input, 1, CV_32FC3);
+
+		auto stride = src.rows * src.cols;
+		input = input.reshape(1, stride).t();
+		cv::Mat output(src.rows, src.cols, CV_32FC1);
+
+		int64_t shapes[] { 1, 3, src.rows, src.cols };
+		auto input_tensor = Ort::Value::CreateTensor<float>(
+			_OPENCV_MEM_INFO,
+			input.ptr<float>(),
+			3 * stride,
+			shapes,
+			4
+		);
+
+		shapes[1] = 1;
+		auto output_tensor = Ort::Value::CreateTensor<float>(
+			_OPENCV_MEM_INFO,
+			output.ptr<float>(),
+			stride,
+			shapes,
+			4
+		);
+
+		_model.run(input_tensor, output_tensor);
+
 		// https://github.com/PaddlePaddle/PaddleOCR/blob/v2.6.0/ppocr/postprocess/db_postprocess.py#L230-L235
 
 		cv::Mat mask;
-		cv::threshold(scores, mask, _threshold, 255, cv::ThresholdTypes::THRESH_BINARY);
+		cv::threshold(output, mask, _threshold, 255, cv::ThresholdTypes::THRESH_BINARY);
 		if (_use_dilation)
 			cv::dilate(mask, mask, _kernel_2x2);
 
@@ -487,11 +473,11 @@ public:
 
 		size_t kept = 0;
 
-		#define _OCR_DB_POSTPROCESS_TRANSFORM(LABEL, METHOD) \
+#define _OCR_DB_POSTPROCESS_TRANSFORM(LABEL, METHOD) \
 			LABEL: \
 				for (size_t i = 0; i < contours.size() and kept < _max_candidates; ++i) \
 					if (_transform<scoring_methods::METHOD>( \
-						scores, \
+						output, \
 						contours[i], \
 						contours[kept], \
 						_box_threshold, \
@@ -499,7 +485,7 @@ public:
 					)) \
 						++kept;
 
-		#define _OCR_DB_POSTPROCESS_TRANSFORM_DIRECT(METHOD) \
+#define _OCR_DB_POSTPROCESS_TRANSFORM_DIRECT(METHOD) \
 			_OCR_DB_POSTPROCESS_TRANSFORM(case scoring_methods::METHOD, METHOD) \
 				break;
 
@@ -511,7 +497,7 @@ public:
 		}
 
 		if (not kept)
-			return;
+			return false;
 		contours.resize(kept);
 
 		boxes.reserve(boxes.size() + kept);
@@ -525,7 +511,7 @@ public:
 
 export
 template<typename T>
-concept extractor = std::derived_from<T, extractors::base>;
+concept detector = std::derived_from<T, detectors::base>;
 
 namespace classifiers
 {
@@ -536,16 +522,16 @@ struct base
 	virtual ~base() noexcept = default;
 
 	[[nodiscard]]
-	virtual std::vector<size_t> run(const std::vector<cv::Mat>& fragments) = 0;
+	virtual bool run(const std::vector<cv::Mat>& fragments, std::vector<size_t>& indices) = 0;
 };
 
 export
 struct trivial final : public base
 {
 	[[nodiscard]]
-	virtual std::vector<size_t> run(const std::vector<cv::Mat>& fragments) override
+	virtual bool run(const std::vector<cv::Mat>&, std::vector<size_t>&) noexcept override
 	{
-		return {};
+		return false;
 	}
 };
 
@@ -574,7 +560,7 @@ public:
 	{}
 
 	[[nodiscard]]
-	virtual std::vector<size_t> run(const std::vector<cv::Mat>& fragments) override
+	virtual bool run(const std::vector<cv::Mat>& fragments, std::vector<size_t>& indices) override
 	{
 		auto stride = _shape.area();
 		cv::Mat input({ int(_batch_size), 3, stride }, CV_32FC1);
@@ -598,8 +584,7 @@ public:
 			2
 		);
 
-		std::vector<size_t> ret;
-		ret.reserve(fragments.size());
+		indices.reserve(indices.size() + fragments.size());
 		for (size_t i = 0; i < fragments.size(); i += _batch_size)
 		{
 			size_t current_batch = std::min(_batch_size, fragments.size() - i);
@@ -627,14 +612,14 @@ public:
 				int index;
 				cv::minMaxIdx(output.row(c), nullptr, &score, nullptr, &index);
 				if (index and score >= _threshold)
-					ret.push_back(j);
+					indices.push_back(j);
 			}
 		}
-		return ret;
+		return true;
 	}
 };
 
-const auto concrete::_mean = cv::Scalar::all(0.5), concrete::_stddev = cv::Scalar::all(0.5);
+const cv::Scalar concrete::_mean = cv::Scalar::all(0.5), concrete::_stddev = cv::Scalar::all(0.5);
 
 }
 
@@ -645,14 +630,32 @@ concept classifier = std::derived_from<T, classifiers::base>;
 namespace recognisers
 {
 
+export
 struct base
 {
 	virtual ~base() noexcept = default;
 
 	[[nodiscard]]
-	virtual std::vector<std::tuple<size_t, std::string, double>> run(const std::vector<cv::Mat>& fragments) = 0;
+	virtual bool run(
+		const std::vector<cv::Mat>& fragments,
+		std::vector<std::tuple<size_t, std::string, double>>& results
+	) = 0;
 };
 
+export
+struct trivial final : public base
+{
+	[[nodiscard]]
+	virtual bool run(
+		const std::vector<cv::Mat>&,
+		std::vector<std::tuple<size_t, std::string, double>>&
+	) noexcept override
+	{
+		return false;
+	}
+};
+
+export
 class ctc final : public base
 {
 	static const cv::Scalar _mean, _stddev;
@@ -681,9 +684,13 @@ public:
 	{
 		mio::mmap_source dict(dictionary_path);
 		std::vector<char> buffer;
-		// Unicode replacement character 0xFFFD in UTF-8
-		_dictionary.emplace_back(0xef, 0xbf, 0xbd);
 		buffer.reserve(4);
+		// Unicode replacement character 0xFFFD in UTF-8
+		buffer.push_back(0xef);
+		buffer.push_back(0xbf);
+		buffer.push_back(0xbd);
+		_dictionary.emplace_back(buffer);
+		buffer.clear();
 		for (size_t i = 0; i < dict.size(); ++i)
 		{
 			char c = dict[i];
@@ -708,8 +715,9 @@ public:
 	}
 
 	[[nodiscard]]
-	virtual inline std::vector<std::tuple<size_t, std::string, double>> run(
-		const std::vector<cv::Mat>& fragments
+	virtual inline bool run(
+		const std::vector<cv::Mat>& fragments,
+		std::vector<std::tuple<size_t, std::string, double>>& results
 	) override
 	{
 		auto stride = _shape.area();
@@ -735,8 +743,7 @@ public:
 			3
 		);
 
-		std::vector<std::tuple<size_t, std::string, double>> ret;
-		ret.reserve(fragments.size());
+		results.reserve(results.size() + fragments.size());
 		std::string buffer;
 		buffer.reserve(160);
 		for (size_t i = 0; i < fragments.size(); i += _batch_size)
@@ -782,11 +789,11 @@ public:
 				}
 				total_score /= count;
 				if (total_score >= _threshold)
-					ret.emplace_back(j, buffer, total_score);
+					results.emplace_back(j, buffer, total_score);
 				buffer.clear();
 			}
 		}
-		return ret;
+		return true;
 	}
 };
 
@@ -795,6 +802,97 @@ public:
 export
 template<typename T>
 concept recogniser = std::derived_from<T, recognisers::base>;
+
+namespace pmr
+{
+
+export
+class system final
+{
+	std::unique_ptr<scalers::base> _scaler;
+	std::unique_ptr<detectors::base> _detector;
+	std::unique_ptr<classifiers::base> _classifier;
+	std::unique_ptr<recognisers::base> _recogniser;
+public:
+	system(
+		std::unique_ptr<scalers::base> scaler,
+		std::unique_ptr<detectors::base> detector,
+		std::unique_ptr<classifiers::base> classifier,
+		std::unique_ptr<recognisers::base> recogniser
+	) :
+		_scaler(std::move(scaler)),
+		_detector(std::move(detector)),
+		_classifier(std::move(classifier)),
+		_recogniser(std::move(recogniser))
+	{}
+
+	[[nodiscard]]
+	std::vector<std::tuple<cv::Mat, std::string, double>> ocr(const cv::Mat& image)
+	{
+		std::vector<cv::Mat> fragments, indices;
+		if (cv::Mat scaled; _scaler and _scaler->run(image, scaled))
+			if (std::vector<cv::RotatedRect> boxes; _detector and _detector->run(scaled, boxes))
+			{
+				double hr = double(image.rows) / scaled.rows, wr = double(image.cols) / scaled.cols;
+
+				fragments.reserve(boxes.size());
+				indices.reserve(boxes.size());
+				for (auto& box : boxes)
+				{
+					box.center.x *= wr;
+					box.center.y *= hr;
+					box.size.width *= wr;
+					box.size.height *= hr;
+					cv::crop(image, box, indices.emplace_back(), fragments.emplace_back());
+				}
+			}
+			else
+			{
+				fragments.emplace_back(image);
+				indices.emplace_back();
+			}
+		else
+			if (std::vector<cv::RotatedRect> boxes; _detector and _detector->run(image, boxes))
+			{
+				fragments.reserve(boxes.size());
+				indices.reserve(boxes.size());
+				for (const auto& box : boxes)
+					cv::crop(image, box, indices.emplace_back(), fragments.emplace_back());
+			}
+			else
+			{
+				fragments.emplace_back(image);
+				indices.emplace_back();
+			}
+
+		if (std::vector<size_t> rotations; _classifier and _classifier->run(fragments, rotations))
+			for (const auto& index : rotations)
+			{
+				auto& fragment = fragments[index];
+				cv::flip(fragment, fragment, -1);
+			}
+
+		std::vector<std::tuple<cv::Mat, std::string, double>> ret;
+		if (
+			std::vector<std::tuple<size_t, std::string, double>> results;
+			_recogniser and _recogniser->run(fragments, results)
+		)
+		{
+			ret.reserve(results.size());
+			for (auto& [index, text, score] : results)
+				ret.emplace_back(std::move(indices[index]), std::move(text), score);
+		}
+		else
+		{
+			ret.reserve(indices.size());
+			for (auto& index : indices)
+				ret.emplace_back(std::move(index), std::string {}, 0.0);
+		}
+		return ret;
+	}
+};
+
+}
 
 export
 template<
@@ -809,20 +907,83 @@ class system final
 	Detector _detector;
 	Classifier _classifier;
 	Recogniser _recogniser;
+public:
+	system(
+		Scaler scaler,
+		Detector detector,
+		Classifier classifier,
+		Recogniser recogniser
+	) :
+		_scaler(std::move(scaler)),
+		_detector(std::move(detector)),
+		_classifier(std::move(classifier)),
+		_recogniser(std::move(recogniser))
+	{}
+
+	[[nodiscard]]
+	std::vector<std::tuple<cv::Mat, std::string, double>> ocr(const cv::Mat& image)
+	{
+		std::vector<cv::Mat> fragments, indices;
+		if (cv::Mat scaled; _scaler.run(image, scaled))
+			if (std::vector<cv::RotatedRect> boxes; _detector.run(scaled, boxes))
+			{
+				double hr = double(image.rows) / scaled.rows, wr = double(image.cols) / scaled.cols;
+
+				fragments.reserve(boxes.size());
+				indices.reserve(boxes.size());
+				for (auto& box : boxes)
+				{
+					box.center.x *= wr;
+					box.center.y *= hr;
+					box.size.width *= wr;
+					box.size.height *= hr;
+					cv::crop(image, box, indices.emplace_back(), fragments.emplace_back());
+				}
+			}
+			else
+			{
+				fragments.emplace_back(image);
+				indices.emplace_back();
+			}
+		else
+			if (std::vector<cv::RotatedRect> boxes; _detector.run(image, boxes))
+			{
+				fragments.reserve(boxes.size());
+				indices.reserve(boxes.size());
+				for (const auto& box : boxes)
+					cv::crop(image, box, indices.emplace_back(), fragments.emplace_back());
+			}
+			else
+			{
+				fragments.emplace_back(image);
+				indices.emplace_back();
+			}
+
+		if (std::vector<size_t> rotations; _classifier.run(fragments, rotations))
+			for (const auto& index : rotations)
+			{
+				auto& fragment = fragments[index];
+				cv::flip(fragment, fragment, -1);
+			}
+
+		std::vector<std::tuple<cv::Mat, std::string, double>> ret;
+		if (
+			std::vector<std::tuple<size_t, std::string, double>> results;
+			_recogniser.run(fragments, results)
+		)
+		{
+			ret.reserve(results.size());
+			for (auto& [index, text, score] : results)
+				ret.emplace_back(std::move(indices[index]), std::move(text), score);
+		}
+		else
+		{
+			ret.reserve(indices.size());
+			for (auto& index : indices)
+				ret.emplace_back(std::move(index), std::string {}, 0.0);
+		}
+		return ret;
+	}
 };
-
-namespace pmr
-{
-
-export
-class system final
-{
-	std::unique_ptr<scalers::base> _scaler;
-	std::unique_ptr<detectors::base> _detector;
-	std::unique_ptr<classifiers::base> _classifier;
-	std::unique_ptr<recognisers::base> _recogniser;
-};
-
-}
 
 }
